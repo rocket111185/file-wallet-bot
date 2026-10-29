@@ -1,6 +1,15 @@
 import type { Database } from 'src/db/db.interface';
-import { DB_ERROR_KEYS, type FileItem, type FolderInfo, type Status } from 'src/types';
-import { generateId } from 'src/utils';
+import { logger } from 'src/logger';
+import {
+  DB_ERROR_KEYS,
+  MAX_FOLDER_NAME_LENGTH,
+  type DbErrorKey,
+  type FileItem,
+  type FolderInfo,
+  type Status,
+  type StatusError,
+} from 'src/types';
+import { generateId, graphemeLength, sameName } from 'src/utils';
 
 export class CloudflareKVDatabase implements Database {
   constructor(private readonly kv: KVNamespace) {}
@@ -13,223 +22,167 @@ export class CloudflareKVDatabase implements Database {
     return `files:${userId}:${folderId}`;
   }
 
-  private generateFolderId(): string {
-    // Generate a compact 12-character URL-safe Base64URL ID from 9 random bytes (72 bits of entropy)
-    return generateId(9);
+  private async readFolders(userId: string | number): Promise<FolderInfo[]> {
+    return (await this.kv.get<FolderInfo[]>(this.getFoldersKey(userId), 'json')) ?? [];
+  }
+
+  private async readFiles(userId: string | number, folderId: string): Promise<FileItem[]> {
+    return (await this.kv.get<FileItem[]>(this.getFilesKey(userId, folderId), 'json')) ?? [];
+  }
+
+  /**
+   * Runs a storage operation, turning unexpected exceptions into a logged `StatusError`.
+   * The details stay in the logs; callers only get a translation key.
+   */
+  private async run<T>(
+    op: string,
+    key: DbErrorKey,
+    context: Record<string, unknown>,
+    fn: () => Promise<Status<T>>,
+  ): Promise<Status<T>> {
+    try {
+      return await fn();
+    } catch (err) {
+      logger.error(`db.${op}.failed`, { ...context, err });
+      return { error: true, key };
+    }
+  }
+
+  private validateFolderName(name: string): StatusError | null {
+    const length = graphemeLength(name);
+    if (length === 0 || length > MAX_FOLDER_NAME_LENGTH) {
+      return { error: true, key: DB_ERROR_KEYS.FOLDER_NAME_LENGTH, params: { max: MAX_FOLDER_NAME_LENGTH } };
+    }
+    return null;
   }
 
   async addFolder(userId: string | number, name: string): Promise<Status<{ id: string }>> {
-    try {
+    return this.run('addFolder', DB_ERROR_KEYS.DB_ADD_FOLDER, { userId }, async () => {
       const trimmedName = name.trim();
-      if (!trimmedName || trimmedName.length > 32) {
-        return {
-          error: true,
-          key: DB_ERROR_KEYS.FOLDER_NAME_LENGTH,
-          message: 'Folder name must be between 1 and 32 characters long.',
-        };
+      const invalid = this.validateFolderName(trimmedName);
+      if (invalid) return invalid;
+
+      const folders = await this.readFolders(userId);
+      if (folders.some((folder) => sameName(folder.name, trimmedName))) {
+        return { error: true, key: DB_ERROR_KEYS.FOLDER_ALREADY_EXISTS, params: { name: trimmedName } };
       }
 
-      const folders = (await this.kv.get<FolderInfo[]>(this.getFoldersKey(userId), 'json')) ?? [];
-
-      const exists = folders.some(
-        (folder) => folder.name.toLowerCase() === trimmedName.toLowerCase(),
-      );
-      if (exists) {
-        return {
-          error: true,
-          key: DB_ERROR_KEYS.FOLDER_ALREADY_EXISTS,
-          params: { name: trimmedName },
-          message: `A folder named '${trimmedName}' already exists.`,
-        };
-      }
-
-      const id = this.generateFolderId();
-      const updatedFolders: FolderInfo[] = [...folders, { id, name: trimmedName }];
-
-      await this.kv.put(this.getFoldersKey(userId), JSON.stringify(updatedFolders));
-      await this.kv.put(this.getFilesKey(userId, id), JSON.stringify([]));
+      // Folder IDs are 12-char base64url strings from 9 random bytes (72 bits of entropy)
+      const id = generateId(9);
+      await this.kv.put(this.getFoldersKey(userId), JSON.stringify([...folders, { id, name: trimmedName }]));
 
       return { error: false, data: { id } };
-    } catch (err) {
-      return {
-        error: true,
-        key: DB_ERROR_KEYS.DB_ADD_FOLDER,
-        message: err instanceof Error ? err.message : 'Failed to add folder.',
-      };
-    }
+    });
   }
 
   async renameFolder(userId: string | number, folderId: string, newName: string): Promise<Status> {
-    try {
+    return this.run('renameFolder', DB_ERROR_KEYS.DB_RENAME_FOLDER, { userId, folderId }, async () => {
       const trimmedName = newName.trim();
+      const invalid = this.validateFolderName(trimmedName);
+      if (invalid) return invalid;
 
-      if (!trimmedName || trimmedName.length > 32) {
-        return {
-          error: true,
-          key: DB_ERROR_KEYS.FOLDER_NAME_LENGTH,
-          message: 'Folder name must be between 1 and 32 characters long.',
-        };
+      const folders = await this.readFolders(userId);
+      const folder = folders.find((f) => f.id === folderId);
+      if (!folder) {
+        return { error: true, key: DB_ERROR_KEYS.FOLDER_NOT_FOUND };
       }
 
-      const folders = (await this.kv.get<FolderInfo[]>(this.getFoldersKey(userId), 'json')) ?? [];
-      const folderIndex = folders.findIndex((f) => f.id === folderId);
-
-      if (folderIndex === -1) {
-        return {
-          error: true,
-          key: DB_ERROR_KEYS.FOLDER_NOT_FOUND,
-          message: 'Folder not found.',
-        };
+      if (folders.some((f) => f.id !== folderId && sameName(f.name, trimmedName))) {
+        return { error: true, key: DB_ERROR_KEYS.FOLDER_ALREADY_EXISTS, params: { name: trimmedName } };
       }
 
-      const nameConflict = folders.some(
-        (f) => f.id !== folderId && f.name.toLowerCase() === trimmedName.toLowerCase(),
-      );
-
-      if (nameConflict) {
-        return {
-          error: true,
-          key: DB_ERROR_KEYS.FOLDER_ALREADY_EXISTS,
-          params: { name: trimmedName },
-          message: `A folder named '${trimmedName}' already exists.`,
-        };
-      }
-
-      folders[folderIndex].name = trimmedName;
+      folder.name = trimmedName;
       await this.kv.put(this.getFoldersKey(userId), JSON.stringify(folders));
 
       return { error: false };
-    } catch (err) {
-      return {
-        error: true,
-        key: DB_ERROR_KEYS.DB_RENAME_FOLDER,
-        message: err instanceof Error ? err.message : 'Failed to rename folder.',
-      };
-    }
+    });
   }
 
   async removeFolder(userId: string | number, folderId: string): Promise<Status> {
-    try {
-      const folders = (await this.kv.get<FolderInfo[]>(this.getFoldersKey(userId), 'json')) ?? [];
+    return this.run('removeFolder', DB_ERROR_KEYS.DB_REMOVE_FOLDER, { userId, folderId }, async () => {
+      const folders = await this.readFolders(userId);
       const updatedFolders = folders.filter((f) => f.id !== folderId);
+      if (updatedFolders.length === folders.length) {
+        return { error: true, key: DB_ERROR_KEYS.FOLDER_NOT_FOUND };
+      }
 
       await this.kv.put(this.getFoldersKey(userId), JSON.stringify(updatedFolders));
       await this.kv.delete(this.getFilesKey(userId, folderId));
 
       return { error: false };
-    } catch (err) {
-      return {
-        error: true,
-        key: DB_ERROR_KEYS.DB_REMOVE_FOLDER,
-        message: err instanceof Error ? err.message : 'Failed to remove folder.',
-      };
-    }
+    });
   }
 
   async listFolders(userId: string | number): Promise<Status<FolderInfo[]>> {
-    try {
-      const folders = (await this.kv.get<FolderInfo[]>(this.getFoldersKey(userId), 'json')) ?? [];
-      return { error: false, data: folders };
-    } catch (err) {
-      return {
-        error: true,
-        key: DB_ERROR_KEYS.DB_LIST_FOLDERS,
-        message: err instanceof Error ? err.message : 'Failed to list folders.',
-      };
-    }
+    return this.run('listFolders', DB_ERROR_KEYS.DB_LIST_FOLDERS, { userId }, async () => ({
+      error: false,
+      data: await this.readFolders(userId),
+    }));
   }
 
   async addFiles(userId: string | number, folderId: string, files: FileItem[]): Promise<Status> {
-    try {
+    return this.run('addFiles', DB_ERROR_KEYS.DB_ADD_FILES, { userId, folderId, count: files.length }, async () => {
       if (files.length === 0) {
         return { error: false };
       }
 
-      const currentFiles =
-        (await this.kv.get<FileItem[]>(this.getFilesKey(userId, folderId), 'json')) ?? [];
-
+      const currentFiles = await this.readFiles(userId, folderId);
       const existingIds = new Set(currentFiles.map((file) => file.id));
       const newFiles = files.filter((file) => !existingIds.has(file.id));
 
-      const updatedFiles: FileItem[] = [...currentFiles, ...newFiles];
-      await this.kv.put(this.getFilesKey(userId, folderId), JSON.stringify(updatedFiles));
+      await this.kv.put(this.getFilesKey(userId, folderId), JSON.stringify([...currentFiles, ...newFiles]));
 
       return { error: false };
-    } catch (err) {
-      return {
-        error: true,
-        key: DB_ERROR_KEYS.DB_ADD_FILES,
-        message: err instanceof Error ? err.message : 'Failed to add files.',
-      };
-    }
+    });
   }
 
   async removeFiles(userId: string | number, folderId: string, fileIds: string[]): Promise<Status> {
-    try {
-      if (fileIds.length === 0) {
+    return this.run(
+      'removeFiles',
+      DB_ERROR_KEYS.DB_REMOVE_FILES,
+      { userId, folderId, count: fileIds.length },
+      async () => {
+        if (fileIds.length === 0) {
+          return { error: false };
+        }
+
+        const idsToRemove = new Set(fileIds);
+        const currentFiles = await this.readFiles(userId, folderId);
+        const updatedFiles = currentFiles.filter((file) => !idsToRemove.has(file.id));
+
+        await this.kv.put(this.getFilesKey(userId, folderId), JSON.stringify(updatedFiles));
+
         return { error: false };
-      }
-
-      const currentFiles =
-        (await this.kv.get<FileItem[]>(this.getFilesKey(userId, folderId), 'json')) ?? [];
-
-      const idsToRemove = new Set(fileIds);
-      const updatedFiles = currentFiles.filter((file) => !idsToRemove.has(file.id));
-
-      await this.kv.put(this.getFilesKey(userId, folderId), JSON.stringify(updatedFiles));
-
-      return { error: false };
-    } catch (err) {
-      return {
-        error: true,
-        key: DB_ERROR_KEYS.DB_REMOVE_FILES,
-        message: err instanceof Error ? err.message : 'Failed to remove files.',
-      };
-    }
+      },
+    );
   }
 
   async listFiles(userId: string | number, folderId: string): Promise<Status<FileItem[]>> {
-    try {
-      const files =
-        (await this.kv.get<FileItem[]>(this.getFilesKey(userId, folderId), 'json')) ?? [];
-      return { error: false, data: files };
-    } catch (err) {
-      return {
-        error: true,
-        key: DB_ERROR_KEYS.DB_LIST_FILES,
-        message: err instanceof Error ? err.message : 'Failed to list files.',
-      };
-    }
+    return this.run('listFiles', DB_ERROR_KEYS.DB_LIST_FILES, { userId, folderId }, async () => ({
+      error: false,
+      data: await this.readFiles(userId, folderId),
+    }));
   }
 
   async clearUserData(userId: string | number): Promise<Status> {
-    try {
-      // 1. Fetch folders to delete their file collections
-      const folders = (await this.kv.get<FolderInfo[]>(this.getFoldersKey(userId), 'json')) ?? [];
-      const fileDeletePromises = folders.map((f) =>
-        this.kv.delete(this.getFilesKey(userId, f.id)),
-      );
-
-      // 2. Delete all folder file entries and the main folders list
+    return this.run('clearUserData', DB_ERROR_KEYS.DB_CLEAR_DATA, { userId }, async () => {
+      // 1. Delete every known folder's files and the folder list itself
+      const folders = await this.readFolders(userId);
       await Promise.all([
-        ...fileDeletePromises,
+        ...folders.map((f) => this.kv.delete(this.getFilesKey(userId, f.id))),
         this.kv.delete(this.getFoldersKey(userId)),
       ]);
 
-      // 3. Fallback sweep: delete any remaining/orphaned keys under files:{userId}:
+      // 2. Fallback sweep: delete any orphaned keys under files:{userId}:
       const prefix = `files:${userId}:`;
-      const listed = await this.kv.list({ prefix });
-      if (listed.keys.length > 0) {
+      let cursor: string | undefined;
+      do {
+        const listed = await this.kv.list({ prefix, cursor });
         await Promise.all(listed.keys.map((k) => this.kv.delete(k.name)));
-      }
+        cursor = listed.list_complete ? undefined : listed.cursor;
+      } while (cursor);
 
       return { error: false };
-    } catch (err) {
-      return {
-        error: true,
-        key: DB_ERROR_KEYS.DB_CLEAR_DATA,
-        message: err instanceof Error ? err.message : 'Failed to clear user data.',
-      };
-    }
+    });
   }
 }

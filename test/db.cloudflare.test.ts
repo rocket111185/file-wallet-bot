@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { CloudflareKVDatabase } from 'src/db/db.cloudflare';
 import { DB_ERROR_KEYS, type FileItem } from 'src/types';
@@ -78,8 +78,53 @@ describe('CloudflareKVDatabase', () => {
     if (duplicateRes.error) {
       expect(duplicateRes.key).toBe(DB_ERROR_KEYS.FOLDER_ALREADY_EXISTS);
       expect(duplicateRes.params).toEqual({ name: 'photos' });
-      expect(duplicateRes.message).toContain('already exists');
     }
+  });
+
+  it('treats names that differ only in non-ASCII case as duplicates', async () => {
+    const db = new CloudflareKVDatabase(createMockKV());
+
+    await db.addFolder(userId, 'Фото');
+    const duplicateRes = await db.addFolder(userId, 'фото');
+
+    expect(duplicateRes.error).toBe(true);
+  });
+
+  it('counts emoji as single characters when validating name length', async () => {
+    const db = new CloudflareKVDatabase(createMockKV());
+
+    // 32 family emoji: 32 user-perceived characters, but far more UTF-16 code units
+    const res = await db.addFolder(userId, '👨‍👩‍👧'.repeat(32));
+
+    expect(res.error).toBe(false);
+  });
+
+  it('returns only a translation key and logs the details when storage fails', async () => {
+    const kv = createMockKV();
+    kv.get = (() => Promise.reject(new Error('KV is down'))) as KVNamespace['get'];
+    const db = new CloudflareKVDatabase(kv);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await db.addFolder(userId, 'Docs');
+
+    expect(res).toEqual({ error: true, key: DB_ERROR_KEYS.DB_ADD_FOLDER });
+    expect(consoleError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: 'error',
+        event: 'db.addFolder.failed',
+        userId,
+        error: expect.objectContaining({ message: 'KV is down' }),
+      }),
+    );
+    consoleError.mockRestore();
+  });
+
+  it('reports a missing folder on removal', async () => {
+    const db = new CloudflareKVDatabase(createMockKV());
+
+    const res = await db.removeFolder(userId, 'nonexistent');
+
+    expect(res).toEqual({ error: true, key: DB_ERROR_KEYS.FOLDER_NOT_FOUND });
   });
 
   it('rejects invalid folder names', async () => {

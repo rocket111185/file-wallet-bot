@@ -3,7 +3,7 @@ import type { FileItem, FolderInfo, Status } from 'src/types';
 export interface Database {
   // Folder operations
   addFolder(userId: string | number, name: string): Promise<Status<{ id: string }>>;
-  renameFolder?(userId: string | number, folderId: string, newName: string): Promise<Status>;
+  renameFolder(userId: string | number, folderId: string, newName: string): Promise<Status>;
   removeFolder(userId: string | number, folderId: string): Promise<Status>;
   listFolders(userId: string | number): Promise<Status<FolderInfo[]>>;
 

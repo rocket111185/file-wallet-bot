@@ -1,6 +1,6 @@
 import { InlineKeyboard } from 'grammy';
 import type { BotContext } from 'src/bot/context';
-import { extractFileItem } from 'src/bot/utils';
+import { extractFileItem, translateError } from 'src/bot/utils';
 
 export const handleTextMessage = async (ctx: BotContext): Promise<void> => {
   const text = ctx.message?.text?.trim();
@@ -9,56 +9,44 @@ export const handleTextMessage = async (ctx: BotContext): Promise<void> => {
   if (!text || !userId) return;
 
   // Flow: Add Folder
-  if (ctx.session.action === 'add-folder') {
+  if (ctx.session.flow?.kind === 'add-folder') {
     const res = await ctx.db.addFolder(userId, text);
     if (res.error) {
-      await ctx.reply(`${res.message ?? 'Failed to create folder.'}`);
+      await ctx.reply(translateError(ctx.t, res));
       return;
     }
 
-    ctx.session.action = null;
-    await ctx.reply(
-      `Folder **${text}** created successfully!\n\nUse \`/add_files\` to add files to it.`,
-      { parse_mode: 'Markdown' },
-    );
+    ctx.session.flow = null;
+    await ctx.reply(ctx.t('add-folder-success', { name: text }));
   }
 };
 
 export const handleMediaMessage = async (ctx: BotContext): Promise<void> => {
-  if (ctx.session.action !== 'add-files' || !ctx.session.destinationFolderId) {
+  const flow = ctx.session.flow;
+  if (flow?.kind !== 'add-files' || !flow.folder) {
     return;
   }
 
   const fileItem = extractFileItem(ctx);
   if (!fileItem) return;
 
-  if (!ctx.session.tmpFiles) {
-    ctx.session.tmpFiles = [];
-  }
-
-  ctx.session.tmpFiles.push(fileItem);
-  const count = ctx.session.tmpFiles.length;
+  flow.files.push(fileItem);
+  const count = flow.files.length;
 
   const keyboard = new InlineKeyboard()
-    .text(`Save (${count})`, 'af:save')
-    .text('Cancel', 'af:cancel');
+    .text(ctx.tText('add-files-button-save', { count }), 'af:save')
+    .text(ctx.tText('button-cancel'), 'af:cancel');
 
-  // Clean up prior dynamic message to avoid chat clutter
-  if (ctx.session.pendingMessageId && ctx.chat) {
-    try {
-      await ctx.api.deleteMessage(ctx.chat.id, ctx.session.pendingMessageId);
-    } catch {
+  // Clean up prior status message to avoid chat clutter
+  if (flow.statusMessageId && ctx.chat) {
+    await ctx.api.deleteMessage(ctx.chat.id, flow.statusMessageId).catch(() => {
       // Ignore if message could not be deleted
-    }
+    });
   }
 
-  const sent = await ctx.reply(
-    `**${count}** file(s) ready to be saved.\nClick **Save** when you are done adding files.`,
-    {
-      reply_markup: keyboard,
-      parse_mode: 'Markdown',
-    },
-  );
+  const sent = await ctx.reply(ctx.t('add-files-pending', { count, name: flow.folder.name }), {
+    reply_markup: keyboard,
+  });
 
-  ctx.session.pendingMessageId = sent.message_id;
+  flow.statusMessageId = sent.message_id;
 };

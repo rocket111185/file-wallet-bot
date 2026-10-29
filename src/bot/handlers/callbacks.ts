@@ -1,87 +1,70 @@
 import type { BotContext } from 'src/bot/context';
-import { initialSession } from 'src/types';
+import { endFlow, translateError } from 'src/bot/utils';
 
-export const handleAddFilesSelectFolder = async (
-  ctx: BotContext,
-  folderId: string,
-): Promise<void> => {
+export const handleAddFilesSelectFolder = async (ctx: BotContext, folderId: string): Promise<void> => {
   const userId = ctx.from?.id;
+  const flow = ctx.session.flow;
   if (!userId) return;
+
+  // The keyboard may be left over from an earlier /add_files that was cancelled or replaced
+  if (flow?.kind !== 'add-files') {
+    await ctx.answerCallbackQuery({ text: ctx.tText('session-expired') });
+    return;
+  }
 
   const foldersRes = await ctx.db.listFolders(userId);
   if (foldersRes.error) {
-    await ctx.answerCallbackQuery({ text: 'Failed to access folders.' });
+    await ctx.answerCallbackQuery({ text: translateError(ctx.tText, foldersRes) });
     return;
   }
 
   const folder = foldersRes.data.find((f) => f.id === folderId);
   if (!folder) {
-    await ctx.answerCallbackQuery({ text: 'Folder not found.' });
+    await ctx.answerCallbackQuery({ text: ctx.tText('error-folder-not-found') });
     return;
   }
 
-  ctx.session.destinationFolderId = folderId;
-  ctx.session.action = 'add-files';
-  ctx.session.tmpFiles = [];
+  flow.folder = folder;
+  flow.files = [];
 
   await ctx.answerCallbackQuery();
-  await ctx.editMessageText(
-    `Selected folder: **${folder.name}**\n\n` +
-      'Now send me the files you want to add (documents, photos, audios, stickers, videos).\n' +
-      'When you are finished, click **Save** below.',
-    { parse_mode: 'Markdown' },
-  );
+  await ctx.editMessageText(ctx.t('add-files-folder-selected', { name: folder.name }));
 };
 
 export const handleAddFilesSave = async (ctx: BotContext): Promise<void> => {
   const userId = ctx.from?.id;
-  const folderId = ctx.session.destinationFolderId;
-  const tmpFiles = ctx.session.tmpFiles ?? [];
+  const flow = ctx.session.flow;
 
-  if (!userId || !folderId) {
-    await ctx.answerCallbackQuery({ text: 'Session expired. Please start again.' });
+  if (!userId || flow?.kind !== 'add-files' || !flow.folder) {
+    await ctx.answerCallbackQuery({ text: ctx.tText('session-expired') });
     return;
   }
 
-  if (tmpFiles.length === 0) {
-    await ctx.answerCallbackQuery({ text: 'No files to save.' });
+  if (flow.files.length === 0) {
+    await ctx.answerCallbackQuery({ text: ctx.tText('add-files-nothing-to-save') });
     return;
   }
 
-  const res = await ctx.db.addFiles(userId, folderId, tmpFiles);
+  const res = await ctx.db.addFiles(userId, flow.folder.id, flow.files);
   if (res.error) {
-    await ctx.answerCallbackQuery({ text: res.message ?? 'Failed to save files.' });
+    await ctx.answerCallbackQuery({ text: translateError(ctx.tText, res) });
     return;
   }
 
-  // Delete status message if possible
-  if (ctx.session.pendingMessageId && ctx.chat) {
-    try {
-      await ctx.api.deleteMessage(ctx.chat.id, ctx.session.pendingMessageId);
-    } catch {
-      // Ignore if message already deleted
-    }
-  }
-
-  const count = tmpFiles.length;
-  ctx.session = initialSession();
-
-  await ctx.answerCallbackQuery({ text: 'Files saved successfully!' });
-  await ctx.reply(`Successfully saved **${count}** file(s)!`, {
-    parse_mode: 'Markdown',
-  });
+  await endFlow(ctx);
+  await ctx.answerCallbackQuery();
+  await ctx.reply(ctx.t('add-files-saved', { count: flow.files.length, name: flow.folder.name }));
 };
 
 export const handleAddFilesCancel = async (ctx: BotContext): Promise<void> => {
-  if (ctx.session.pendingMessageId && ctx.chat) {
-    try {
-      await ctx.api.deleteMessage(ctx.chat.id, ctx.session.pendingMessageId);
-    } catch {
-      // Ignore if message already deleted
-    }
-  }
+  const deletedMessageId = await endFlow(ctx);
+  await ctx.answerCallbackQuery();
 
-  ctx.session = initialSession();
-  await ctx.answerCallbackQuery({ text: 'Action cancelled.' });
-  await ctx.editMessageText('Action cancelled.');
+  // Cancel lives both on the folder picker and on the status message. The status message was just
+  // deleted by endFlow, so there is nothing left to edit — reply instead.
+  if (deletedMessageId !== undefined && deletedMessageId === ctx.callbackQuery?.message?.message_id) {
+    await ctx.reply(ctx.t('action-cancelled'));
+  } else {
+    await ctx.editMessageText(ctx.t('action-cancelled'));
+  }
 };

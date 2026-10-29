@@ -2,22 +2,17 @@ import { Bot, session } from 'grammy';
 import type { UserFromGetMe } from 'grammy/types';
 import { KvAdapter } from '@grammyjs/storage-cloudflare';
 
+import type { BotContext } from 'src/bot/context';
+import { handleAddFilesCancel, handleAddFilesSave, handleAddFilesSelectFolder } from 'src/bot/handlers/callbacks';
+import { handleAddFilesCommand, handleAddFolderCommand, handleCancel, handleStart } from 'src/bot/handlers/commands';
+import { handleInlineQuery } from 'src/bot/handlers/inline';
+import { handleMediaMessage, handleTextMessage } from 'src/bot/handlers/messages';
+import { initialSession, type UserSession } from 'src/bot/session';
 import type { Database } from 'src/db/db.interface';
-import { initialSession, type UserSession } from 'src/types';
-import type { BotContext } from './context';
-import {
-  handleAddFilesCancel,
-  handleAddFilesSave,
-  handleAddFilesSelectFolder,
-} from './handlers/callbacks';
-import {
-  handleAddFilesCommand,
-  handleAddFolderCommand,
-  handleCancel,
-  handleStart,
-} from './handlers/commands';
-import { handleInlineQuery } from './handlers/inline';
-import { handleMediaMessage, handleTextMessage } from './handlers/messages';
+import { createTranslator, resolveLocale } from 'src/i18n/i18n';
+import { logger } from 'src/logger';
+
+const HTML_METHODS = new Set(['sendMessage', 'editMessageText']);
 
 export interface CreateBotOptions {
   token: string;
@@ -34,31 +29,38 @@ export const createBot = (options: CreateBotOptions): Bot<BotContext> => {
     botInfo: options.botInfo,
   });
 
+  // All translations are HTML (see src/i18n), so make it the default instead of repeating it on every call
+  bot.api.config.use((prev, method, payload, signal) =>
+    HTML_METHODS.has(method) ? prev(method, { parse_mode: 'HTML', ...payload }, signal) : prev(method, payload, signal),
+  );
+
   bot.use(async (ctx, next) => {
     ctx.db = options.db;
+
+    ctx.locale = resolveLocale(ctx.from?.language_code);
+    const { html, text } = createTranslator(ctx.locale);
+    ctx.t = html;
+    ctx.tText = text;
+
     await next();
   });
-
-  const storage = options.kv
-    ? new KvAdapter<UserSession>(options.kv)
-    : undefined;
 
   bot.use(
     session({
       initial: initialSession,
-      storage,
+      storage: options.kv ? new KvAdapter<UserSession>(options.kv) : undefined,
+      // IMPORTANT! Read session key every time, no matter what. It will help
+      // to avoid errors in the future
       getSessionKey: (ctx) => ctx.from?.id.toString(),
     }),
   );
 
   bot.command('start', handleStart);
   bot.command('cancel', handleCancel);
-  bot.command(['add_folder', 'add-folder'], handleAddFolderCommand);
-  bot.command(['add_files', 'add-files'], handleAddFilesCommand);
+  bot.command('add_folder', handleAddFolderCommand);
+  bot.command('add_files', handleAddFilesCommand);
 
-  bot.callbackQuery(/^af:select:(.+)$/, (ctx) =>
-    handleAddFilesSelectFolder(ctx, ctx.match[1]),
-  );
+  bot.callbackQuery(/^af:select:(.+)$/, (ctx) => handleAddFilesSelectFolder(ctx, ctx.match[1]));
   bot.callbackQuery('af:save', handleAddFilesSave);
   bot.callbackQuery('af:cancel', handleAddFilesCancel);
 
@@ -78,8 +80,8 @@ export const createBot = (options: CreateBotOptions): Bot<BotContext> => {
 
   bot.on('inline_query', handleInlineQuery);
 
-  bot.catch((err) => {
-    console.error('Unhandled bot error:', err);
+  bot.catch(({ error, ctx }) => {
+    logger.error('bot.unhandled', { updateId: ctx.update.update_id, userId: ctx.from?.id, err: error });
   });
 
   return bot;

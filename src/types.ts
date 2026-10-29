@@ -1,6 +1,4 @@
-export type StatusSuccess<T = void> = T extends void
-  ? { error: false }
-  : { error: false; data: T };
+export const MAX_FOLDER_NAME_LENGTH = 32;
 
 export const DB_ERROR_KEYS = {
   FOLDER_NAME_LENGTH: 'error-folder-name-length',
@@ -18,79 +16,25 @@ export const DB_ERROR_KEYS = {
 
 export type DbErrorKey = (typeof DB_ERROR_KEYS)[keyof typeof DB_ERROR_KEYS];
 
+export type StatusSuccess<T = void> = T extends void ? { error: false } : { error: false; data: T };
+
 export type StatusError = {
   error: true;
-  key: string;
-  params?: Record<string, string | number>;
-  message?: string; // Optional English fallback / debug details
+  key: DbErrorKey; // Translation key, rendered by the bot layer
+  params?: Record<string, string | number>; // Translation variables (e.g. { name: 'Work' })
 };
 
 export type Status<T = void> = StatusSuccess<T> | StatusError;
 
-// Global type declaration for ECMAScript Uint8Array toBase64 proposal supported natively by workerd and Node 22+
-declare global {
-  interface Uint8Array {
-    toBase64(options?: {
-      alphabet?: 'base64' | 'base64url';
-      omitPadding?: boolean;
-    }): string;
-  }
-}
-
-
-
-
-export type TelegramFileType =
-  | 'document'
-  | 'photo'
-  | 'audio'
-  | 'video'
-  | 'voice'
-  | 'sticker'
-  | 'animation';
+export type TelegramFileType = 'document' | 'photo' | 'audio' | 'video' | 'voice' | 'sticker' | 'animation';
 
 export type FileItem = {
   id: string; // Telegram file_id
-  name: string;
+  name: string; // User-facing name; empty when Telegram gave us nothing (a localized fallback is rendered instead)
   type: TelegramFileType;
 };
-
-// Aliases for backwards compatibility
-export type File = FileItem;
-export type Folder = FileItem[];
 
 export type FolderInfo = {
   id: string;
   name: string;
 };
-
-export type BotAction =
-  | 'add-folder'
-  | 'add-files'
-  | 'remove-folder'
-  | 'remove-files'
-  | 'confirm-clear-data'
-  | null;
-
-export type UserSession = {
-  language: string;
-  action: BotAction;
-  destinationFolderId: string | null;
-  selectedFolderId: string | null;
-  filesToRemove: string[]; // List of file IDs marked for deletion
-  tmpFiles: FileItem[]; // Files uploaded in current session waiting to be saved
-  currentPage?: number; // Current page index for file pagination
-  pendingMessageId?: number; // Telegram message ID for active prompt/counter message
-};
-
-export const initialSession = (): UserSession => ({
-  language: 'en',
-  action: null,
-  destinationFolderId: null,
-  selectedFolderId: null,
-  filesToRemove: [],
-  tmpFiles: [],
-  currentPage: 0,
-});
-
-
