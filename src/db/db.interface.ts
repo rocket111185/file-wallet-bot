@@ -15,5 +15,3 @@ export interface Database {
   // User teardown
   clearUserData(userId: string | number): Promise<Status>;
 }
-
-

@@ -26,7 +26,9 @@ export type StatusSuccess<T = void> = T extends void
 
 export type StatusError = {
   error: true;
-  message: string;
+  key: string; // Localization key for grammY i18n
+  params?: Record<string, string | number>; // Dynamic translation variables (e.g. { name: 'Work' })
+  message?: string; // Optional English fallback / debug message
 };
 
 export type Status<T = void> = StatusSuccess<T> | StatusError;
@@ -49,9 +51,11 @@ export type FileItem = {
 export type Folder = FileItem[];
 
 export type FolderInfo = {
-  id: string; // Generated unique folder ID (e.g., short nanoid or UUID)
+  id: string; // Generated unique folder ID (e.g., 12-char Base64URL via Uint8Array.prototype.toBase64)
   name: string; // User-defined display name
 };
+
+
 
 export type BotAction =
   | 'add-folder'
@@ -367,11 +371,11 @@ Telegram inline queries operate statelessly. When a user invokes `@botname`, Tel
 1. **Webhook Security**:
    * Verify the `X-Telegram-Bot-Api-Secret-Token` header on incoming POST requests to ensure updates originate from Telegram.
 2. **Cloudflare KV Configuration**:
-   * In `wrangler.jsonc`, configure the KV namespace binding (e.g. `FILE_WALLET_KV`):
+   * In `wrangler.jsonc`, configure the KV namespace binding (e.g. `BOT_KV_VAULT`):
      ```jsonc
      "kv_namespaces": [
        {
-         "binding": "FILE_WALLET_KV",
+         "binding": "BOT_KV_VAULT",
          "id": "<production-kv-id>",
          "preview_id": "<preview-kv-id>"
        }

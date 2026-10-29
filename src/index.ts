@@ -1,33 +1,26 @@
-/**
- * Welcome to Cloudflare Workers! This is your first worker.
- *
- * - Run `npm run dev` in your terminal to start a development server
- * - Open a browser tab at http://localhost:8787/ to see your worker in action
- * - Run `npm run deploy` to publish your worker
- *
- * Bind resources to your worker in `wrangler.jsonc`. After adding bindings, a type definition for the
- * `Env` object can be regenerated with `npm run cf-typegen`.
- *
- * Learn more at https://developers.cloudflare.com/workers/
- */
+import { webhookCallback } from 'grammy';
+import type { UserFromGetMe } from 'grammy/types';
 
-import { Bot, webhookCallback } from 'grammy';
-import { UserFromGetMe } from 'grammy/types';
-
+import { createBot } from 'src/bot/bot';
+import { CloudflareKVDatabase } from 'src/db/db.cloudflare';
 import { tryParseJson } from 'src/utils';
 
 export interface Env {
   BOT_INFO: string;
   BOT_TOKEN: string;
+  BOT_KV_VAULT: KVNamespace;
 }
 
 export default {
   async fetch(request, env, _ctx): Promise<Response> {
     const botInfo = tryParseJson<UserFromGetMe>(env.BOT_INFO);
-    const bot = new Bot(env.BOT_TOKEN, { botInfo });
+    const db = new CloudflareKVDatabase(env.BOT_KV_VAULT);
 
-    bot.command('start', async (ctx) => {
-      await ctx.reply('Hi there!');
+    const bot = createBot({
+      token: env.BOT_TOKEN,
+      db,
+      kv: env.BOT_KV_VAULT,
+      botInfo,
     });
 
     return webhookCallback(bot, 'cloudflare-mod')(request);
