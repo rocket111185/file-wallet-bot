@@ -1,4 +1,4 @@
-import { InlineKeyboard } from 'grammy';
+import { InlineKeyboard, type NextFunction } from 'grammy';
 import type { BotContext } from 'src/bot/context';
 import { extractFileItem, translateError } from 'src/bot/utils';
 
@@ -21,9 +21,31 @@ export const handleTextMessage = async (ctx: BotContext): Promise<void> => {
   }
 };
 
-export const handleMediaMessage = async (ctx: BotContext): Promise<void> => {
+/**
+ * Warns when the bot expects a folder name but got something else; otherwise passes the
+ * message on (e.g. to the media handler)
+ */
+export const handleNonTextMessage = async (ctx: BotContext, next: NextFunction): Promise<void> => {
+  if (ctx.session.flow?.kind === 'add-folder') {
+    await ctx.reply(ctx.t('add-folder-text-required'));
+    return;
+  }
+  await next();
+};
+
+export const handleMediaMessage =async (ctx: BotContext): Promise<void> => {
   const flow = ctx.session.flow;
   if (flow?.kind !== 'add-files' || !flow.folder) {
+    return;
+  }
+
+  // Album items arrive as separate updates that race on the session, so albums aren't supported yet
+  const groupId = ctx.message?.media_group_id;
+  if (groupId) {
+    if (flow.rejectedGroupId !== groupId) {
+      flow.rejectedGroupId = groupId;
+      await ctx.reply(ctx.t('add-files-album-unsupported'));
+    }
     return;
   }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { BotContext } from 'src/bot/context';
+import type { BaseContext } from 'src/bot/context';
 import { handleInlineQuery } from 'src/bot/handlers/inline';
 import type { Database } from 'src/db/db.interface';
 import { createTranslator } from 'src/i18n/i18n';
@@ -26,7 +26,7 @@ const run = async (query: string, folders: FolderInfo[], files: Record<string, F
       answers.push({ results, opts });
       return true;
     },
-  } as unknown as BotContext;
+  } as unknown as BaseContext;
 
   await handleInlineQuery(ctx);
   expect(answers).toHaveLength(1);

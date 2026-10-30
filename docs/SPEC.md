@@ -11,7 +11,8 @@ This document describes the architecture, database schema, and detailed conversa
 ### Core Architecture Principles
 * **Runtime**: [Cloudflare Workers](https://developers.cloudflare.com/workers/) using [grammY](https://grammy.dev/).
 * **Zero-Cost Storage Strategy**: The bot **does not** store binary files. It stores Telegram's internal `file_id` references. When a user requests or shares a file, Telegram servers deliver it directly.
-* **Database & State**: [Cloudflare Workers KV](https://developers.cloudflare.com/kv/) stores folder hierarchies, file metadata, and user sessions.
+* **Database**: [Cloudflare Workers KV](https://developers.cloudflare.com/kv/) stores folders and file metadata. Reads are cheap and fast, which suits inline mode, where most traffic is.
+* **Sessions**: one [Durable Object](https://developers.cloudflare.com/durable-objects/) per user (`UserChat`, SQLite storage) handles all updates from the user's private chat, one at a time, and keeps their session. Inline queries are answered directly by the Worker and never reach it.
 
 ---
 
@@ -93,16 +94,28 @@ Data is partitioned cleanly between persistent bot data (handled by `Database`) 
    * **Key**: `files:${userId}:${folderId}`
    * **Value**: Serialized `FileItem[]` representing all files saved in that specific folder.
 
-#### B. Session Storage (Managed by grammY Session Adapter)
-* **Key**: Handled by grammY's storage adapter (e.g. `session:${userId}`).
-* **Value**: Serialized `UserSession` tracking transient conversation state.
+#### B. Session Storage (Durable Object `UserChat`, not KV)
+* **Object**: one per user, named by the private chat ID (equal to the user ID), via `env.USER_CHAT.getByName(chatId)`.
+* **Key**: the user ID, inside that object's own storage (grammY's session key).
+* **Value**: `UserSession` tracking transient conversation state.
 
 > [!NOTE]
-> Cloudflare KV has an eventual consistency model with a limit of 1 write per second per key. Sending files as media albums (batches) is deferred to future releases; the bot currently expects individual file uploads per message update.
+> Why not KV: KV is eventually consistent, allows 1 write per second per key, and only 1,000 writes per day on the Free plan, while every session change is a write. Telegram also delivers updates in parallel (an album is several updates at once), and grammY reads the session when an update starts and writes it back when it ends, so parallel updates would overwrite each other's changes. `UserChat` sees all of a user's updates and runs them one at a time through an in-memory queue. Durable Object input gates alone don't prevent this, since awaiting a Telegram API call lets the next update start.
+>
+> Media albums are still not supported (see section 3.4); with the queue in place they can be supported later.
 
 ### 2.4 Session Management (grammY)
 
-Session state is injected into `ctx.session` using grammY's `session()` middleware with a KV storage adapter. Sessions exist only in the private chat with the bot; other updates (notably inline queries) skip the session read.
+Session state is injected into `ctx.session` using grammY's `session()` middleware, with a small storage adapter over the `UserChat` Durable Object's storage (`ctx.storage.get/put/delete`). The official `@grammyjs/storage-cloudflare` package only offers KV and D1 adapters.
+
+Sessions exist only in the private chat with the bot. There are two bots, sharing their setup (`src/bot/base.ts`):
+* **Worker bot** (`src/bot/worker-bot.ts`, runs on every webhook request):
+  * Has no session; its context type (`BaseContext`) has no `ctx.session`.
+  * Answers inline queries itself, from KV.
+  * Forwards every private-chat update over RPC to the user's `UserChat`.
+* **Chat bot** (`src/bot/chat-bot.ts`, runs inside `UserChat`):
+  * Reads the session from the object's storage before each update and writes it back after.
+  * Handles commands, buttons and uploads.
 
 The session holds a single `flow`: the multi-step conversation the user is in, as a discriminated union (`src/bot/session.ts`). Each flow kind carries only its own state, so starting a new flow or cancelling is one assignment and cannot leave stale fields behind:
 
@@ -207,6 +220,8 @@ export const initialSession = (): UserSession => ({ flow: null });
        * `audio`: `audio.title` or `audio.file_name`.
        * `video` / `voice` / `sticker`: appropriate title, emoji, or caption.
      * Appends `{ id, name, type }` to `flow.files`.
+   * **Albums** (messages with `media_group_id`) are not supported yet: their files are not added, and the bot warns once per album (tracked by `flow.rejectedGroupId`):
+     > *"⚠️ Albums aren't supported yet. Please send files one by one."*
 4. **Dynamic Status & Save Message**:
    * If an existing status message (`flow.statusMessageId`) exists, deletes it to avoid clutter.
    * Sends a new message:

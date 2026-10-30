@@ -40,6 +40,7 @@ export const en = {
 
   // --- /add_folder ---
   'add-folder-prompt': (p: { max: number }) => `Please enter the name for your new folder (1–${p.max} characters):`,
+  'add-folder-text-required': '⚠️ Please send a text message with the folder name.',
   'add-folder-success': (p: { name: string }) =>
     `✅ Folder <b>${p.name}</b> created successfully!\n\nUse /add_files to add files to it.`,
 
@@ -55,6 +56,7 @@ export const en = {
     `📥 ${plural('en', p.count, { one: '<b>1</b> file', other: `<b>${p.count}</b> files` })} ready to be saved to <b>${p.name}</b>.`,
   'add-files-saved': (p: { count: number; name: string }) =>
     `✅ Successfully saved ${plural('en', p.count, { one: '1 file', other: `${p.count} files` })} to <b>${p.name}</b>.`,
+  'add-files-album-unsupported': "⚠️ Albums aren't supported yet. Please send files one by one.",
   'add-files-nothing-to-save': '⚠️ No files to save.',
   'add-files-button-save': (p: { count: number }) => `💾 Save (${p.count})`,
 

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { InlineQueryResultBuilder } from 'grammy';
 import type { InlineQueryResult } from 'grammy/types';
-import type { BotContext } from 'src/bot/context';
+import type { BaseContext } from 'src/bot/context';
 import { fileDisplayName } from 'src/bot/utils';
 import type { Translate } from 'src/i18n/i18n';
 import { logger } from 'src/logger';
@@ -54,7 +54,7 @@ const paginate = <T>(items: T[], offset: number) => ({
   next_offset: offset + PAGE_SIZE < items.length ? String(offset + PAGE_SIZE) : '',
 });
 
-export const handleInlineQuery = async (ctx: BotContext): Promise<void> => {
+export const handleInlineQuery = async (ctx: BaseContext): Promise<void> => {
   const userId = ctx.from?.id;
   if (!userId || !ctx.inlineQuery) return;
 

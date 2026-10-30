@@ -1,16 +1,8 @@
-declare module '@grammyjs/storage-cloudflare' {
-  export class KvAdapter<T = unknown> {
-    constructor(kv_namespace: KVNamespace);
-    read(key: string): Promise<T | undefined>;
-    write(key: string, value: T): Promise<void>;
-    delete(key: string): Promise<void>;
-    has(key: string): Promise<boolean>;
-  }
-}
-
 // Secrets are not part of wrangler.jsonc, so `wrangler types` can't see them
 interface Secrets {
   BOT_TOKEN: string;
+  /** Must match the `secret_token` passed to setWebhook (1-256 chars of A-Z, a-z, 0-9, _ and -) */
+  BOT_WEBHOOK_SECRET: string;
 }
 interface Env extends Secrets {}
 declare namespace Cloudflare {

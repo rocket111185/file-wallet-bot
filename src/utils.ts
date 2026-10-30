@@ -20,6 +20,22 @@ export const escapeHtml = (s: string): string => s.replace(/&/g, '&amp;').replac
 export const graphemeLength = (s: string): number => [...new Intl.Segmenter().segment(s)].length;
 
 /**
+ * Creates a queue that runs tasks one at a time, in the order they were added
+ *
+ * @returns Function that adds a task and resolves (or rejects) with that task's result
+ */
+export const createSerialQueue = () => {
+  let tail: Promise<unknown> = Promise.resolve();
+  return <T>(task: () => Promise<T>): Promise<T> => {
+    const run = tail.then(task);
+    tail = run.catch(() => {
+      // A failed task must not block the ones after it; the caller gets the error via `run`
+    });
+    return run;
+  };
+};
+
+/**
  * Case-insensitive name comparison that also works outside of plain ASCII
  */
 export const sameName = (a: string, b: string): boolean => a.localeCompare(b, undefined, { sensitivity: 'accent' }) === 0;
