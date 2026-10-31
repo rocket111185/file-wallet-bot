@@ -3,7 +3,7 @@ import type { Update } from 'grammy/types';
 
 import { createBaseBot, type BaseBotOptions } from 'src/bot/base';
 import type { BaseContext } from 'src/bot/context';
-import { handleInlineQuery } from 'src/bot/handlers/inline';
+import { inline } from 'src/bot/features/inline';
 
 export interface WorkerBotOptions extends BaseBotOptions {
   /** Hands a private-chat update to the user's Durable Object (see src/bot/chat-bot.ts) */
@@ -20,7 +20,7 @@ export const createWorkerBot = (options: WorkerBotOptions): Bot<BaseContext> => 
 
   bot.chatType('private').use((ctx) => options.forwardPrivateChat(ctx.chat.id, ctx.update));
 
-  bot.on('inline_query', handleInlineQuery);
+  bot.use(inline);
 
   return bot;
 };

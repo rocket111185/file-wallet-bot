@@ -34,13 +34,16 @@ export const en = {
     '<b>Available commands:</b>\n' +
     '/add_folder - Create a new folder\n' +
     '/add_files - Add files to an existing folder\n' +
+    '/rename_folder - Rename a folder\n' +
+    '/remove_folder - Delete a folder and its files\n' +
+    '/clear_data - Delete all your data\n' +
     '/cancel - Cancel current action\n\n' +
     `In any chat, type <code>@${p.botUsername}</code> to see your folders, then add a folder's number ` +
     `(e.g. <code>@${p.botUsername} 1</code>) to open it. Tap a file to send it instantly!`,
 
   // --- /add_folder ---
   'add-folder-prompt': (p: { max: number }) => `Please enter the name for your new folder (1–${p.max} characters):`,
-  'add-folder-text-required': '⚠️ Please send a text message with the folder name.',
+  'folder-name-text-required': '⚠️ Please send a text message with the folder name.',
   'add-folder-success': (p: { name: string }) =>
     `✅ Folder <b>${p.name}</b> created successfully!\n\nUse /add_files to add files to it.`,
 
@@ -59,6 +62,36 @@ export const en = {
   'add-files-album-unsupported': "⚠️ Albums aren't supported yet. Please send files one by one.",
   'add-files-nothing-to-save': '⚠️ No files to save.',
   'add-files-button-save': (p: { count: number }) => `💾 Save (${p.count})`,
+
+  // --- /rename_folder ---
+  'rename-folder-no-folders': "⚠️ You don't have any folders to rename.",
+  'rename-folder-choose-folder': 'Choose a folder to rename:',
+  'rename-folder-prompt': (p: { name: string; max: number }) =>
+    `Send me the new name for <b>${p.name}</b> (1–${p.max} characters):`,
+  'rename-folder-success': (p: { oldName: string; newName: string }) =>
+    `✅ Folder <b>${p.oldName}</b> renamed to <b>${p.newName}</b>.`,
+
+  // --- /remove_folder ---
+  'remove-folder-no-folders': "⚠️ You don't have any folders to remove.",
+  'remove-folder-choose-folder': 'Choose a folder to delete:',
+  'remove-folder-confirm': (p: { name: string; count: number }) =>
+    `⚠️ <b>Are you sure you want to delete folder ${p.name}?</b>\n` +
+    `This will permanently delete the folder and ${plural('en', p.count, {
+      one: 'the 1 file',
+      other: `all ${p.count} files`,
+    })} inside it!`,
+  'remove-folder-button-confirm': '🗑️ Yes, delete folder',
+  'remove-folder-success': (p: { name: string }) => `✅ Folder <b>${p.name}</b> and its files have been deleted.`,
+  'remove-folder-cancelled': 'Folder deletion cancelled.',
+
+  // --- /clear_data ---
+  'clear-data-confirm':
+    '⚠️ <b>DANGER: IRREVERSIBLE ACTION</b>\n\n' +
+    'This will permanently delete all your folders and files.\n\n' +
+    'Are you sure you want to proceed?',
+  'clear-data-button-confirm': '💥 Yes, delete all my data',
+  'clear-data-success': '🧹 All your data has been completely and permanently erased.',
+  'clear-data-cancelled': 'Operation cancelled. Your data remains safe.',
 
   // --- Default file names (used when Telegram provides no name or caption) ---
   'file-default-document': 'Document',

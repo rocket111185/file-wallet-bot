@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { BaseContext } from 'src/bot/context';
-import { handleInlineQuery } from 'src/bot/handlers/inline';
+import { handleInlineQuery } from 'src/bot/features/inline';
 import type { Database } from 'src/db/db.interface';
 import { createTranslator } from 'src/i18n/i18n';
 import type { FileItem, FolderInfo } from 'src/types';

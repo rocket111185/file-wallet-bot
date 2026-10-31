@@ -106,18 +106,22 @@ Data is partitioned cleanly between persistent bot data (handled by `Database`) 
 
 ### 2.4 Session Management (grammY)
 
-Session state is injected into `ctx.session` using grammY's `session()` middleware, with a small storage adapter over the `UserChat` Durable Object's storage (`ctx.storage.get/put/delete`). The official `@grammyjs/storage-cloudflare` package only offers KV and D1 adapters.
+Session state is injected into `ctx.session` using grammY's `session()` middleware. Like the database, the session layer (`src/session/`) is an interface plus an implementation, injected into the chat bot:
+* `src/session/session.ts`: the session types and `SessionStorage`, which is grammY's own `StorageAdapter<UserSession>` (`read`/`write`/`delete`). Any grammY storage fits, e.g. the built-in `MemorySessionStorage` used by the tests.
+* `src/session/session.durable-object.ts`: `DurableObjectSessionStorage`, over the `UserChat` Durable Object's storage. The official `@grammyjs/storage-cloudflare` package only offers KV and D1 adapters.
+
+Whatever the storage, a user's updates must be handled one at a time (see the note in 2.3). On Cloudflare, `UserChat` does this; a non-Cloudflare host would use grammY's `sequentialize`.
 
 Sessions exist only in the private chat with the bot. There are two bots, sharing their setup (`src/bot/base.ts`):
 * **Worker bot** (`src/bot/worker-bot.ts`, runs on every webhook request):
   * Has no session; its context type (`BaseContext`) has no `ctx.session`.
-  * Answers inline queries itself, from KV.
+  * Answers inline queries itself, from KV (`src/bot/features/inline.ts`).
   * Forwards every private-chat update over RPC to the user's `UserChat`.
 * **Chat bot** (`src/bot/chat-bot.ts`, runs inside `UserChat`):
-  * Reads the session from the object's storage before each update and writes it back after.
+  * Reads the session from `SessionStorage` before each update and writes it back after.
   * Handles commands, buttons and uploads.
 
-The session holds a single `flow`: the multi-step conversation the user is in, as a discriminated union (`src/bot/session.ts`). Each flow kind carries only its own state, so starting a new flow or cancelling is one assignment and cannot leave stale fields behind:
+The session holds a single `flow`: the multi-step conversation the user is in, as a discriminated union (`src/session/session.ts`). Each flow kind carries only its own state, so starting a new flow or cancelling is one assignment and cannot leave stale fields behind:
 
 ```typescript
 export type Flow =
@@ -127,17 +131,39 @@ export type Flow =
       folder: { id: string; name: string } | null; // null until a folder is picked
       files: FileItem[];                           // received, not yet saved
       statusMessageId?: number;                    // the "N files ready / Save" message
-    };
-// remove-folder, remove-files and confirm-clear-data are added as they get implemented
+    }
+  | { kind: 'rename-folder'; folder: { id: string; name: string } | null } // null until picked
+  | { kind: 'remove-folder'; folder: { id: string; name: string } | null } // null until picked
+  | { kind: 'clear-data' };
+// remove-files is added when it gets implemented
 
 export type UserSession = { flow: Flow | null };
 export const initialSession = (): UserSession => ({ flow: null });
 ```
 
-* Ending a flow (`endFlow(ctx)`) sets `flow = null` and deletes the flow's status message, if any.
+* Ending a flow (`endFlow(ctx)`) sets `flow = null` and deletes the flow's status message (`statusMessageId`, any flow may have one), if any.
 * When `/clear_data` is confirmed: `db.clearUserData(userId)` is executed and `ctx.session = initialSession()` clears the session.
 
-### 2.5 Localization
+### 2.5 Bot Features
+
+The chat bot's handlers are grouped by feature in `src/bot/features/`. Each feature is a grammY `Composer` holding its own commands, buttons and message handlers, and `createChatBot` only plugs them in:
+
+```
+src/bot/features/
+  common.ts          /start, /cancel
+  folders/           add.ts (/add_folder), rename.ts (/rename_folder), remove.ts (/remove_folder)
+  files/             add.ts (/add_files); /remove_files goes here
+  clear-data.ts      /clear_data
+  inline.ts          inline queries (Worker bot)
+```
+
+Shared helpers:
+* `src/bot/flow.ts`: `endFlow`; `awaitingInput(kind)`, the filter for messages that are input to a flow; `activeFlow` and `cancelFlow` for buttons (section 3.5).
+* `src/bot/folder-picker.ts`: the folder keyboard and the lookup of a picked folder, for commands that start by picking a folder.
+
+**Commands always win.** A message is flow input only while the user is in that flow and only if it is not a command (`awaitingInput`). So the order features are registered in doesn't matter: a command sent mid-flow always reaches its own handler and starts over (section 3.1), and an unknown command (e.g. a typo) is ignored instead of becoming a folder name.
+
+### 2.6 Localization
 
 * The locale comes from the user's Telegram `language_code`, falling back to English (`src/i18n/i18n.ts`).
 * Messages live in `src/i18n/locales/<locale>.ts`. `en.ts` is the source locale: its keys and parameter types define what every other locale must provide.
@@ -146,7 +172,7 @@ export const initialSession = (): UserSession => ({ flow: null });
 * The DB layer never returns user-facing text, only a translation key (`DbErrorKey`) and params.
 * Default file names (e.g. "Photo") are never stored: `FileItem.name` is left empty and the localized fallback is rendered at display time.
 
-### 2.6 Logging
+### 2.7 Logging
 
 * Logs go through `src/logger.ts`, which writes structured objects (`{ level, event, ...fields, error }`) to the console. Workers Logs indexes each field, so logs can be filtered by `event`, `userId`, etc.
 * Unexpected storage errors are logged by the DB layer (`db.<operation>.failed`) and returned to the caller as a translation key only.
@@ -240,36 +266,62 @@ export const initialSession = (): UserSession => ({ flow: null });
 
 ---
 
-### 3.5 `/remove_folder`
+### 3.5 Stale Buttons
+
+Buttons stay on old messages after their flow ended or another command replaced it. Every button except Cancel checks that the session's flow is of its kind; otherwise it answers with the alert *"This action has expired. Please start again."* and does nothing. Cancel always replaces its menu with the cancellation text, but only ends the flow if it is of its kind.
+
+---
+
+### 3.6 `/rename_folder`
+
+1. **Empty State Guard**:
+   * If `folders.length === 0`:
+     > *"⚠️ You don't have any folders to rename."*
+     * Aborts flow.
+2. **Folder Selection**:
+   * Sets `flow = { kind: 'rename-folder', folder: null }`.
+   * Displays an inline keyboard of all folders (callback `rnf:select:{folderId}`) with a `[ ❌ Cancel ]` button (callback `rnf:cancel`).
+   * Once a folder is picked, sets `flow.folder` and edits the message to:
+     > *"Send me the new name for **{folderName}** (1–32 characters):"*
+3. **Receiving the Name**: same validation as `/add_folder` (non-text inputs, length, duplicate names; renaming a folder to a different casing of its own name is allowed). On an invalid name, the bot warns and keeps waiting. Text sent before a folder is picked is ignored.
+4. **Completion**:
+   * Renames the folder in the user's folder list. Its ID, files and position (inline folder number) stay the same.
+   * Ends the flow (`flow = null`).
+   * Sends: *"✅ Folder **{oldName}** renamed to **{newName}**."*
+5. **Cancel**: edits the message to *"Action cancelled."* and ends the flow.
+
+---
+
+### 3.7 `/remove_folder`
 
 1. **Empty State Guard**:
    * If `folders.length === 0`:
      > *"⚠️ You don't have any folders to remove."*
      * Aborts flow.
 2. **Folder Selection**:
-   * Sets `action = 'remove-folder'`.
-   * Displays an inline keyboard of all folders with a `[ ❌ Cancel ]` button.
+   * Sets `flow = { kind: 'remove-folder', folder: null }`.
+   * Displays an inline keyboard of all folders (callback `rmf:select:{folderId}`) with a `[ ❌ Cancel ]` button (callback `rmf:cancel`).
 3. **Destructive Action Warning & Confirmation**:
    * Once user selects a folder, do **NOT** delete immediately.
-   * Checks file count in that folder.
-   * Sends a confirmation prompt:
-     > *"⚠️ **Are you sure you want to delete folder '{folderName}'?**\nThis will permanently delete the folder and all {count} file(s) inside it!"*
+   * Sets `flow.folder` and checks the file count in that folder.
+   * Edits the message to a confirmation prompt:
+     > *"⚠️ **Are you sure you want to delete folder {folderName}?**\nThis will permanently delete the folder and all {count} file(s) inside it!"*
      * Inline buttons:
-       * `[ 🗑️ Yes, delete folder ]` (callback `rf_confirm:{folderId}`)
-       * `[ ❌ Cancel ]` (callback `rf_cancel`)
+       * `[ 🗑️ Yes, delete folder ]` (callback `rmf:confirm`; the folder is taken from `flow.folder`)
+       * `[ ❌ Cancel ]` (callback `rmf:cancel`)
 4. **Execution**:
    * If confirmed:
      * Deletes `files:${userId}:${folderId}` from KV.
-     * Removes folder from user's `folders` list.
-     * Edits message to: *"✅ Folder '{folderName}' and its files have been deleted."*
-     * Resets `action = null`.
+     * Removes folder from user's `folders` list. The folders after it move up one inline number.
+     * Edits message to: *"✅ Folder **{folderName}** and its files have been deleted."*
+     * Ends the flow (`flow = null`).
    * If cancelled:
      * Edits message to: *"Folder deletion cancelled."*
-     * Resets `action = null`.
+     * Ends the flow (`flow = null`).
 
 ---
 
-### 3.6 `/remove_files`
+### 3.8 `/remove_files`
 
 1. **Empty State Guard**:
    * If `folders.length === 0`, warns: *"⚠️ You don't have any folders."*
@@ -306,23 +358,23 @@ export const initialSession = (): UserSession => ({ flow: null });
 
 ---
 
-### 3.7 `/clear_data`
+### 3.9 `/clear_data`
 
 1. **High-Risk Destructive Warning**:
-   * Sets `action = 'confirm-clear-data'`.
+   * Sets `flow = { kind: 'clear-data' }`.
    * Sends critical warning:
-     > *"⚠️ **DANGER: IRREVERSIBLE ACTION**\n\nThis will permanently delete all your folders, files, and personal settings.\n\nAre you sure you want to proceed?"*
+     > *"⚠️ **DANGER: IRREVERSIBLE ACTION**\n\nThis will permanently delete all your folders and files.\n\nAre you sure you want to proceed?"*
      * Inline buttons:
-       * `[ 💥 Yes, delete all my data ]` (callback `clear_confirm`)
-       * `[ ❌ Cancel ]` (callback `clear_cancel`)
+       * `[ 💥 Yes, delete all my data ]` (callback `cd:confirm`)
+       * `[ ❌ Cancel ]` (callback `cd:cancel`)
 2. **Execution**:
    * On confirmation:
-     * Calls `db.clearUserData(userId)` to delete all folder keys and user profile in KV.
-     * Resets session to defaults.
+     * Calls `db.clearUserData(userId)` to delete the folder list and every `files:${userId}:*` key in KV.
+     * Resets session to defaults (`ctx.session = initialSession()`).
      * Edits message to: *"🧹 All your data has been completely and permanently erased."*
    * On cancel:
      * Edits message to: *"Operation cancelled. Your data remains safe."*
-     * Resets `action = null`.
+     * Ends the flow (`flow = null`).
 
 ---
 

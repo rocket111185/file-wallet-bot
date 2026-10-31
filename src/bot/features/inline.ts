@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { InlineQueryResultBuilder } from 'grammy';
+import { Composer, InlineQueryResultBuilder } from 'grammy';
 import type { InlineQueryResult } from 'grammy/types';
 import type { BaseContext } from 'src/bot/context';
 import { fileDisplayName } from 'src/bot/utils';
@@ -129,3 +129,8 @@ export const handleInlineQuery = async (ctx: BaseContext): Promise<void> => {
     await ctx.answerInlineQuery([errorResult()], opts);
   }
 };
+
+/** Inline mode: answered by the Worker straight from KV, without a session */
+export const inline = new Composer<BaseContext>();
+
+inline.on('inline_query', handleInlineQuery);

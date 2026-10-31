@@ -1,11 +1,11 @@
 import { DurableObject } from 'cloudflare:workers';
-import type { Bot, StorageAdapter } from 'grammy';
+import type { Bot } from 'grammy';
 import type { Update } from 'grammy/types';
 
 import { createChatBot } from 'src/bot/chat-bot';
 import type { BotContext } from 'src/bot/context';
-import type { UserSession } from 'src/bot/session';
 import { CloudflareKVDatabase } from 'src/db/db.cloudflare';
+import { DurableObjectSessionStorage } from 'src/session/session.durable-object';
 import { createSerialQueue } from 'src/utils';
 
 /**
@@ -26,19 +26,11 @@ export class UserChat extends DurableObject<Env> {
   }
 
   private getBot(): Bot<BotContext> {
-    const storage: StorageAdapter<UserSession> = {
-      read: (key) => this.ctx.storage.get<UserSession>(key),
-      write: (key, value) => this.ctx.storage.put(key, value),
-      delete: async (key) => {
-        await this.ctx.storage.delete(key);
-      },
-    };
-
     this.bot ??= createChatBot({
       token: this.env.BOT_TOKEN,
       db: new CloudflareKVDatabase(this.env.BOT_KV_VAULT),
       botInfo: this.env.BOT_INFO,
-      sessionStorage: storage,
+      sessionStorage: new DurableObjectSessionStorage(this.ctx.storage),
     });
 
     return this.bot;

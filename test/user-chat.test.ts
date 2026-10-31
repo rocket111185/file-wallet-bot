@@ -3,7 +3,7 @@ import type { Update, UserFromGetMe } from 'grammy/types';
 import { describe, expect, it } from 'vitest';
 
 import { createChatBot } from 'src/bot/chat-bot';
-import type { UserSession } from 'src/bot/session';
+import type { UserSession } from 'src/session/session';
 import type { Database } from 'src/db/db.interface';
 import { createSerialQueue } from 'src/utils';
 

@@ -4,6 +4,8 @@ import { escapeHtml } from 'src/utils';
 /** Shape every locale must implement: same keys and parameters as English */
 export type Messages = typeof en;
 export type MessageKey = keyof Messages;
+/** Keys of messages without parameters */
+export type PlainMessageKey = { [K in MessageKey]: Messages[K] extends string ? K : never }[MessageKey];
 
 type Params<K extends MessageKey> = Messages[K] extends (p: infer P) => string ? P : never;
 type ParamsArg<K extends MessageKey> = [Params<K>] extends [never] ? [] : [params: Params<K>];
