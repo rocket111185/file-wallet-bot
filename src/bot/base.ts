@@ -1,4 +1,4 @@
-import { Bot } from 'grammy';
+import { Bot, type ApiClientOptions } from 'grammy';
 import type { UserFromGetMe } from 'grammy/types';
 
 import type { BaseContext } from 'src/bot/context';
@@ -18,9 +18,10 @@ export interface BaseBotOptions {
  * Setup shared by the Worker bot and the chat bot: HTML by default, `ctx.db`, translations and the
  * error handler. Handlers are added by the caller.
  */
-export const createBaseBot = <C extends BaseContext>(options: BaseBotOptions): Bot<C> => {
+export const createBaseBot = <C extends BaseContext>(options: BaseBotOptions, client?: ApiClientOptions): Bot<C> => {
   const bot = new Bot<C>(options.token, {
     botInfo: options.botInfo,
+    client,
   });
 
   // All translations are HTML (see src/i18n), so make it the default instead of repeating it on every call

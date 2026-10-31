@@ -128,7 +128,12 @@ export class CloudflareKVDatabase implements Database {
 
       const currentFiles = await this.readFiles(userId, folderId);
       const existingIds = new Set(currentFiles.map((file) => file.id));
-      const newFiles = files.filter((file) => !existingIds.has(file.id));
+      // Also skips repeats within the batch itself (e.g. the same sticker sent twice in one session)
+      const newFiles = files.filter((file) => {
+        if (existingIds.has(file.id)) return false;
+        existingIds.add(file.id);
+        return true;
+      });
 
       await this.kv.put(this.getFilesKey(userId, folderId), JSON.stringify([...currentFiles, ...newFiles]));
 

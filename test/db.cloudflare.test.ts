@@ -239,6 +239,25 @@ describe('CloudflareKVDatabase', () => {
     }
   });
 
+  it('dedupes repeated files within a single batch', async () => {
+    const kv = createMockKV();
+    const db = new CloudflareKVDatabase(kv);
+
+    const folder = await db.addFolder(userId, 'Stickers');
+    expect(folder.error).toBe(false);
+    if (folder.error) return;
+
+    const heart: FileItem = { id: 'tg_heart', name: '❤️', type: 'sticker' };
+    const rose: FileItem = { id: 'tg_rose', name: '🌹', type: 'sticker' };
+    await db.addFiles(userId, folder.data.id, [heart, rose, heart]);
+
+    const list = await db.listFiles(userId, folder.data.id);
+    expect(list.error).toBe(false);
+    if (!list.error) {
+      expect(list.data.map((f) => f.id)).toEqual(['tg_heart', 'tg_rose']);
+    }
+  });
+
   it('clears all user data completely', async () => {
     const kv = createMockKV();
     const db = new CloudflareKVDatabase(kv);

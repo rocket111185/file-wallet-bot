@@ -4,12 +4,15 @@ import type { InlineQueryResult } from 'grammy/types';
 import type { BaseContext } from 'src/bot/context';
 import { fileDisplayName } from 'src/bot/utils';
 import type { Translate } from 'src/i18n/i18n';
-import { logger } from 'src/logger';
 import type { FileItem } from 'src/types';
 import { escapeHtml } from 'src/utils';
 
 // Telegram accepts at most 50 results per answer; the rest is fetched via `next_offset`
 const PAGE_SIZE = 50;
+
+// How long Telegram may reuse an answer for the same query from the same user, unless configured
+// otherwise (INLINE_CACHE_SECONDS in wrangler.jsonc)
+export const DEFAULT_CACHE_SECONDS = 30;
 
 const resultId = (prefix: string, raw: string): string =>
   `${prefix}:${createHash('sha1').update(raw).digest('hex').slice(0, 32)}`;
@@ -54,12 +57,14 @@ const paginate = <T>(items: T[], offset: number) => ({
   next_offset: offset + PAGE_SIZE < items.length ? String(offset + PAGE_SIZE) : '',
 });
 
-export const handleInlineQuery = async (ctx: BaseContext): Promise<void> => {
+export const handleInlineQuery = async (ctx: BaseContext, cacheSeconds = DEFAULT_CACHE_SECONDS): Promise<void> => {
   const userId = ctx.from?.id;
   if (!userId || !ctx.inlineQuery) return;
 
   const t = ctx.tText; // Titles and descriptions are plain text
-  const opts = { cache_time: 0, is_personal: true } as const;
+  // Repeated queries are answered by Telegram from its cache, without reaching the Worker. Edits show
+  // up in inline mode after at most `cacheSeconds`.
+  const opts = { cache_time: cacheSeconds, is_personal: true } as const;
   const offset = Number(ctx.inlineQuery.offset) || 0;
   const errorResult = () => info('err', t('inline-error-title'), t('inline-error-description'));
 
@@ -109,7 +114,11 @@ export const handleInlineQuery = async (ctx: BaseContext): Promise<void> => {
     return;
   }
 
-  if (filesRes.data.length === 0) {
+  // Telegram rejects the whole answer if two results share an id (RESULT_ID_DUPLICATE),
+  // so drop repeats that older versions could have stored
+  const files = [...new Map(filesRes.data.map((file) => [file.id, file])).values()];
+
+  if (files.length === 0) {
     await ctx.answerInlineQuery(
       [info('empty', t('inline-empty-folder-title', { name: folder.name }), t('inline-empty-folder-description'))],
       opts,
@@ -117,20 +126,16 @@ export const handleInlineQuery = async (ctx: BaseContext): Promise<void> => {
     return;
   }
 
-  const { page, next_offset } = paginate(filesRes.data, offset);
-
-  try {
-    await ctx.answerInlineQuery(
-      page.map((file) => fileResult(t, file)),
-      { ...opts, next_offset },
-    );
-  } catch (err) {
-    logger.error('inline.answer.failed', { userId, folderId: folder.id, offset, count: page.length, err });
-    await ctx.answerInlineQuery([errorResult()], opts);
-  }
+  const { page, next_offset } = paginate(files, offset);
+  await ctx.answerInlineQuery(
+    page.map((file) => fileResult(t, file)),
+    { ...opts, next_offset },
+  );
 };
 
 /** Inline mode: answered by the Worker straight from KV, without a session */
-export const inline = new Composer<BaseContext>();
-
-inline.on('inline_query', handleInlineQuery);
+export const createInline = (cacheSeconds = DEFAULT_CACHE_SECONDS): Composer<BaseContext> => {
+  const inline = new Composer<BaseContext>();
+  inline.on('inline_query', (ctx) => handleInlineQuery(ctx, cacheSeconds));
+  return inline;
+};

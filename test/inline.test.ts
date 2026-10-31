@@ -1,7 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { webhookCallback } from 'grammy';
+import type { UserFromGetMe } from 'grammy/types';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { BaseContext } from 'src/bot/context';
 import { handleInlineQuery } from 'src/bot/features/inline';
+import { createWorkerBot } from 'src/bot/worker-bot';
 import type { Database } from 'src/db/db.interface';
 import { createTranslator } from 'src/i18n/i18n';
 import type { FileItem, FolderInfo } from 'src/types';
@@ -58,6 +61,15 @@ describe('inline mode', () => {
     expect(results.map((r) => r.title)).toEqual(['1. Folder 1', '2. Folder 2']);
   });
 
+  it('drops duplicate files so result ids stay unique', async () => {
+    const heart = { id: 'heart', name: '❤️', type: 'sticker' as const };
+    const files = { f1: [heart, { id: 'rose', name: '🌹', type: 'sticker' as const }, heart] };
+    const { results } = await run('1', folders(1), files);
+    expect(results).toHaveLength(2);
+    const ids = results.map((r) => (r as { id?: string }).id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
   it('reports unknown folder numbers', async () => {
     const { results } = await run('5', folders(2));
     expect(results[0].title).toBe('No folder #5');
@@ -72,5 +84,34 @@ describe('inline mode', () => {
     expect(second.results).toHaveLength(10);
     expect(second.results[0].title).toBe('51. Folder 51');
     expect(second.opts.next_offset).toBe('');
+  });
+});
+
+describe('inline answers in the webhook response', () => {
+  it('answers in the webhook response body instead of a separate request to Telegram', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const db = {
+      listFolders: async () => ({ error: false, data: folders(2) }),
+    } as unknown as Database;
+    const bot = createWorkerBot({
+      token: 'test',
+      db,
+      botInfo: { id: 2, is_bot: true, first_name: 'Bot', username: 'test_bot' } as UserFromGetMe,
+      forwardPrivateChat: async () => {},
+    });
+
+    const update = {
+      update_id: 1,
+      inline_query: { id: 'q1', from: { id: 1, is_bot: false, first_name: 'User' }, query: '', offset: '' },
+    };
+    const res = await webhookCallback(bot, 'cloudflare-mod')(
+      new Request('https://worker/', { method: 'POST', body: JSON.stringify(update) }),
+    );
+
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({ method: 'answerInlineQuery', inline_query_id: 'q1', cache_time: 30, is_personal: true });
+    expect(body.results).toHaveLength(2);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
   });
 });

@@ -437,9 +437,10 @@ Folder numbers are the folder's 1-based position in the user's folder list (`fol
     * `'animation'` -> `InlineQueryResultCachedGif`
 * **Zero Bandwidth Delivery**: When user taps a file in the inline list, Telegram delivers it directly from Telegram servers into the chat.
 
-### 4.4 Caching
+### 4.4 Speed & Caching
 
-* Answers use `is_personal: true` and `cache_time: 0`, since results depend on the user and change as soon as they edit their folders.
+* Answers use `is_personal: true` (results depend on the user) and `cache_time` from the `INLINE_CACHE_SECONDS` var (default 30, editable in the dashboard): Telegram answers a repeated query from its cache, without reaching the Worker. The price is that edits (new, renamed or removed folders and files) can take up to that many seconds to show up for a query the user already made.
+* **Webhook reply**: the answer is sent back in the webhook's HTTP response instead of a separate `answerInlineQuery` request to Telegram (grammY's `canUseWebhookReply`, Worker bot only). Telegram doesn't report errors for webhook replies, so an answer it rejects is lost silently and the user sees no results. There is no fallback for that case.
 
 ---
 
