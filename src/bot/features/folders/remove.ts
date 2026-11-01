@@ -2,7 +2,7 @@ import { Composer, InlineKeyboard } from 'grammy';
 
 import type { BotContext } from 'src/bot/context';
 import { activeFlow, cancelFlow, endFlow } from 'src/bot/flow';
-import { findFolder, folderPicker, loadFoldersToPick } from 'src/bot/folder-picker';
+import { findFolder, folderPicked, folderPicker, loadFoldersToPick } from 'src/bot/folder-picker';
 import { translateError } from 'src/bot/utils';
 
 const handleCommand = async (ctx: BotContext): Promise<void> => {
@@ -43,15 +43,10 @@ const handleSelectFolder = async (ctx: BotContext, folderId: string): Promise<vo
 
 const handleConfirm = async (ctx: BotContext): Promise<void> => {
   const userId = ctx.from?.id;
-  const flow = await activeFlow(ctx, 'remove-folder');
+  const flow = await activeFlow(ctx, 'remove-folder', folderPicked);
   if (!userId || !flow) return;
 
   const { folder } = flow;
-  if (!folder) {
-    await ctx.answerCallbackQuery({ text: ctx.tText('session-expired') });
-    return;
-  }
-
   const res = await ctx.db.removeFolder(userId, folder.id);
   if (res.error) {
     await ctx.answerCallbackQuery({ text: translateError(ctx.tText, res) });

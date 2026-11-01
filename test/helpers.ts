@@ -40,11 +40,16 @@ export const createTestBot = () => {
 
   const calls: { method: string; payload: Record<string, unknown> }[] = [];
   let messageId = 100;
+  let lastSentId = 0;
   bot.api.config.use(async (_prev, method, payload) => {
     calls.push({ method, payload: payload as Record<string, unknown> });
-    const result = method === 'sendMessage' ? { message_id: ++messageId, date: 0, chat: { id: USER_ID } } : true;
+    if (method === 'sendMessage') lastSentId = ++messageId;
+    const result = method === 'sendMessage' ? { message_id: lastSentId, date: 0, chat: { id: USER_ID } } : true;
     return { ok: true, result } as never;
   });
+
+  /** ID of the last message the bot sent (e.g. a menu, to press its buttons) */
+  const lastMessageId = () => lastSentId;
 
   let updateId = 0;
   const from = { id: USER_ID, is_bot: false, first_name: 'User', language_code: 'en' };
@@ -67,8 +72,8 @@ export const createTestBot = () => {
     } as Update);
   };
 
-  /** Presses an inline button */
-  const press = (callbackData: string) =>
+  /** Presses an inline button on message `onMessageId` */
+  const press = (callbackData: string, onMessageId = 1) =>
     bot.handleUpdate({
       update_id: ++updateId,
       callback_query: {
@@ -76,7 +81,7 @@ export const createTestBot = () => {
         from,
         chat_instance: '1',
         data: callbackData,
-        message: { message_id: 1, date: 0, chat, text: 'menu' },
+        message: { message_id: onMessageId, date: 0, chat, text: 'menu' },
       },
     } as Update);
 
@@ -100,7 +105,7 @@ export const createTestBot = () => {
     return res.data.id;
   };
 
-  return { bot, db, data, calls, send, press, lastText, lastAlert, flow, folders, addFolder };
+  return { bot, db, data, calls, send, press, lastText, lastAlert, lastMessageId, flow, folders, addFolder };
 };
 
 export const photo = (fileId: string, media_group_id?: string): Partial<Message> =>

@@ -2,7 +2,7 @@ import { Composer, InlineKeyboard } from 'grammy';
 
 import type { BotContext } from 'src/bot/context';
 import { activeFlow, awaitingInput, endFlow, type FlowContext } from 'src/bot/flow';
-import { findFolder, folderPicker, loadFoldersToPick } from 'src/bot/folder-picker';
+import { findFolder, folderPicked, folderPicker, loadFoldersToPick } from 'src/bot/folder-picker';
 import { translateError } from 'src/bot/utils';
 import type { FileItem } from 'src/types';
 
@@ -113,15 +113,10 @@ const handleFile = async (ctx: FlowContext<'add-files'>): Promise<void> => {
 
 const handleSave = async (ctx: BotContext): Promise<void> => {
   const userId = ctx.from?.id;
-  const flow = await activeFlow(ctx, 'add-files');
+  const flow = await activeFlow(ctx, 'add-files', folderPicked);
   if (!userId || !flow) return;
 
   const { folder, files } = flow;
-  if (!folder) {
-    await ctx.answerCallbackQuery({ text: ctx.tText('session-expired') });
-    return;
-  }
-
   if (files.length === 0) {
     await ctx.answerCallbackQuery({ text: ctx.tText('add-files-nothing-to-save') });
     return;

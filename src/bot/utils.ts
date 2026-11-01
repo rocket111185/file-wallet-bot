@@ -14,3 +14,8 @@ export const translateError = (t: Translate, err: StatusError): string => {
  */
 export const fileDisplayName = (t: Translate, file: FileItem): string =>
   file.name || t(`file-default-${file.type}`);
+
+/**
+ * Drops repeated files (same Telegram file_id), which older versions could have stored
+ */
+export const uniqueFiles = (files: FileItem[]): FileItem[] => [...new Map(files.map((file) => [file.id, file])).values()];

@@ -34,6 +34,7 @@ export const en = {
     '<b>Available commands:</b>\n' +
     '/add_folder - Create a new folder\n' +
     '/add_files - Add files to an existing folder\n' +
+    '/remove_files - Remove files from a folder\n' +
     '/rename_folder - Rename a folder\n' +
     '/remove_folder - Delete a folder and its files\n' +
     '/clear_data - Delete all your data\n' +
@@ -83,6 +84,20 @@ export const en = {
   'remove-folder-button-confirm': '🗑️ Yes, delete folder',
   'remove-folder-success': (p: { name: string }) => `✅ Folder <b>${p.name}</b> and its files have been deleted.`,
   'remove-folder-cancelled': 'Folder deletion cancelled.',
+
+  // --- /remove_files ---
+  'remove-files-no-folders': "⚠️ You don't have any folders.",
+  'remove-files-choose-folder': 'Choose a folder to remove files from:',
+  'remove-files-empty': (p: { name: string }) => `⚠️ Folder <b>${p.name}</b> is empty. There are no files to remove.`,
+  'remove-files-choose-files': (p: { name: string; page: number; pages: number }) =>
+    `Tap the files to remove from <b>${p.name}</b>, then press <b>Delete Selected</b>.` +
+    (p.pages > 1 ? `\n\nPage ${p.page} of ${p.pages}` : ''),
+  'remove-files-button-prev': '◀️ Previous',
+  'remove-files-button-next': 'Next ▶️',
+  'remove-files-button-delete': (p: { count: number }) => `🗑️ Delete Selected (${p.count})`,
+  'remove-files-nothing-selected': '⚠️ Please select at least one file to delete.',
+  'remove-files-success': (p: { count: number; name: string }) =>
+    `✅ Removed ${plural('en', p.count, { one: '1 file', other: `${p.count} files` })} from <b>${p.name}</b>.`,
 
   // --- /clear_data ---
   'clear-data-confirm':

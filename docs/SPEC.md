@@ -134,8 +134,15 @@ export type Flow =
     }
   | { kind: 'rename-folder'; folder: { id: string; name: string } | null } // null until picked
   | { kind: 'remove-folder'; folder: { id: string; name: string } | null } // null until picked
+  | {
+      kind: 'remove-files';
+      menuMessageId: number;                       // the menu message; buttons elsewhere are stale
+      folder: { id: string; name: string } | null; // null until picked
+      files: FileItem[];                           // the folder's files when picked
+      selected: string[];                          // IDs of the files marked for removal
+      page: number;                                // 0-based page of the file list
+    }
   | { kind: 'clear-data' };
-// remove-files is added when it gets implemented
 
 export type UserSession = { flow: Flow | null };
 export const initialSession = (): UserSession => ({ flow: null });
@@ -152,14 +159,14 @@ The chat bot's handlers are grouped by feature in `src/bot/features/`. Each feat
 src/bot/features/
   common.ts          /start, /cancel
   folders/           add.ts (/add_folder), rename.ts (/rename_folder), remove.ts (/remove_folder)
-  files/             add.ts (/add_files); /remove_files goes here
+  files/             add.ts (/add_files), remove.ts (/remove_files)
   clear-data.ts      /clear_data
   inline.ts          inline queries (Worker bot)
 ```
 
 Shared helpers:
-* `src/bot/flow.ts`: `endFlow`; `awaitingInput(kind)`, the filter for messages that are input to a flow; `activeFlow` and `cancelFlow` for buttons (section 3.5).
-* `src/bot/folder-picker.ts`: the folder keyboard and the lookup of a picked folder, for commands that start by picking a folder.
+* `src/bot/flow.ts`: `endFlow`; `awaitingInput(kind)`, the filter for messages that are input to a flow; `activeFlow` and `cancelFlow` for buttons (section 3.5). Both take an optional check (`FlowCheck`, a type guard) that the flow must pass besides its kind, e.g. that a folder is picked or that the button is on the flow's own menu.
+* `src/bot/folder-picker.ts`: the folder keyboard, the lookup of a picked folder, and the `folderPicked` check, for commands that start by picking a folder.
 
 **Commands always win.** A message is flow input only while the user is in that flow and only if it is not a command (`awaitingInput`). So the order features are registered in doesn't matter: a command sent mid-flow always reaches its own handler and starts over (section 3.1), and an unknown command (e.g. a typo) is ignored instead of becoming a folder name.
 
@@ -199,7 +206,7 @@ Shared helpers:
 
 * Ends the current flow (`flow = null`).
 * Replies with a welcoming greeting explaining the bot's features:
-  * How to organize files into folders (`/add_folder`, `/add_files`).
+  * How to organize files into folders (`/add_folder`, `/add_files`, `/remove_files`).
   * How to share files in any chat using inline queries: `@botname` lists folders, `@botname {number}` opens one.
   * List of available commands.
 
@@ -326,35 +333,39 @@ Buttons stay on old messages after their flow ended or another command replaced 
 1. **Empty State Guard**:
    * If `folders.length === 0`, warns: *"⚠️ You don't have any folders."*
 2. **Select Folder**:
-   * Displays folder list buttons.
-   * User selects folder `folderId`.
-   * Loads files from `files:${userId}:${folderId}`.
+   * Sets `flow = { kind: 'remove-files', menuMessageId, folder: null, files: [], selected: [], page: 0 }`, where `menuMessageId` is the folder picker message.
+   * Displays an inline keyboard of all folders (callback `rf:select:{folderId}`) with a `[ ❌ Cancel ]` button (callback `rf:cancel`).
+   * Once a folder is picked, loads its files from `files:${userId}:${folderId}` (each `file_id` once, see 4.3).
    * If file list is empty:
-     > *"⚠️ Folder '{folderName}' is empty. There are no files to remove."*
-     * Aborts flow.
+     > *"⚠️ Folder **{folderName}** is empty. There are no files to remove."*
+     * Ends the flow.
+   * Otherwise sets `flow.folder` and `flow.files` and edits the picker into the file list. `flow.files` is a snapshot: buttons refer to files by their position in it.
 3. **Paginated Interactive List (10 items per page)**:
-   * Sets `destinationFolderId = folderId`, `action = 'remove-files'`, `filesToRemove = []`, `currentPage = 0`.
-   * Renders files as inline buttons (10 per page):
-     * If file ID is in `filesToRemove`: `[ ✅ {name} ]`
+   * Message: *"Tap the files to remove from **{folderName}**, then press **Delete Selected**."*, plus *"Page {n} of {total}"* when there is more than one page.
+   * Renders the current page's files as inline buttons, one per row (name as in 2.6, with the localized fallback):
+     * If file ID is in `flow.selected`: `[ ✅ {name} ]`
      * If not selected: `[ {name} ]`
+   * Navigation row (only with more than one page): `[ ◀️ Previous ]` and/or `[ Next ▶️ ]`.
    * **64-Byte Callback Data Constraint**:
      * Raw Telegram `file_id` strings exceed Telegram's 64-byte `callback_data` limit.
      * Use short index-based payloads:
-       * Toggle file: `rf:t:{indexOnPage}`
-       * Pagination: `rf:p:{targetPage}`
+       * Toggle file: `rf:t:{index}`, the file's position in the whole `flow.files` (not on the page), so a tap that arrives right after a page change still hits the file the user saw
+       * Pagination: `rf:p:{targetPage}` (0-based); the current page again only answers the callback, since Telegram rejects an edit that changes nothing
        * Delete action: `rf:del`
        * Cancel: `rf:cancel`
+   * **Stale menus**: since buttons refer to positions, every `rf:` button only works on the flow's own menu (`flow.menuMessageId`); on any other message it answers *"This action has expired. Please start again."* (section 3.5). Otherwise a menu left from an earlier `/remove_files` could select files in the current one. As `flow.files` doesn't change during the flow, an out-of-range index or page can only come from forged callback data and is ignored.
 4. **Multi-Selection Toggle**:
-   * Clicking a file toggles its selection in `filesToRemove`.
+   * Clicking a file toggles its ID in `flow.selected`. The selection is kept across pages.
    * Edits the existing message markup (`editMessageReplyMarkup`) to update checkmarks without sending new messages.
 5. **Execution**:
    * Bottom bar displays: `[ 🗑️ Delete Selected ({count}) ]` and `[ ❌ Cancel ]`.
    * If user clicks Delete with 0 files selected:
      * Alerts via `answerCallbackQuery`: *"⚠️ Please select at least one file to delete."*
    * If files are selected:
-     * Removes selected file IDs from KV.
-     * Sends: *"✅ Removed {count} file(s) from '{folderName}'."*
-     * Cleans up session variables (`filesToRemove`, `destinationFolderId`, `currentPage`) and resets `action = null`.
+     * Removes selected file IDs from KV (`db.removeFiles`).
+     * Edits the menu to: *"✅ Removed {count} file(s) from **{folderName}**."*
+     * Ends the flow (`flow = null`).
+   * Cancel: edits the menu to *"Action cancelled."* and ends the flow, if it is this menu's flow.
 
 ---
 

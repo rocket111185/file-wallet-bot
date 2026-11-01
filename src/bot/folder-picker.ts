@@ -23,6 +23,12 @@ export const folderPicker = (ctx: BotContext, folders: FolderInfo[], prefix: str
 };
 
 /**
+ * Flow check (see `activeFlow`) for buttons that need the folder to be picked already
+ */
+export const folderPicked = <F extends { folder: FolderInfo | null }>(flow: F): flow is F & { folder: FolderInfo } =>
+  flow.folder !== null;
+
+/**
  * Ends the current flow and loads the user's folders, replying with `emptyKey` if there are none
  *
  * @returns The folders, or null when the command can't go on (already replied)

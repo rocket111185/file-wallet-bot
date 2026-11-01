@@ -1,6 +1,6 @@
 import type { StorageAdapter } from 'grammy';
 
-import type { FileItem } from 'src/types';
+import type { FileItem, FolderInfo } from 'src/types';
 
 /**
  * The multi-step conversation the user is currently in. Each flow carries only the state it needs,
@@ -12,18 +12,26 @@ export type Flow =
   | { kind: 'add-folder' }
   | {
       kind: 'add-files';
-      folder: { id: string; name: string } | null; // null until a folder is picked
+      folder: FolderInfo | null; // null until a folder is picked
       files: FileItem[]; // Received files waiting to be saved
       statusMessageId?: number; // The "N files ready / Save" message, replaced on every new file
       rejectedGroupId?: string; // Last album warned about, so each album gets one warning
     }
   | {
       kind: 'rename-folder';
-      folder: { id: string; name: string } | null; // null until a folder is picked
+      folder: FolderInfo | null; // null until a folder is picked
     }
   | {
       kind: 'remove-folder';
-      folder: { id: string; name: string } | null; // null until a folder is picked
+      folder: FolderInfo | null; // null until a folder is picked
+    }
+  | {
+      kind: 'remove-files';
+      menuMessageId: number; // The folder picker, then the file list: buttons on any other message are stale
+      folder: FolderInfo | null; // null until a folder is picked
+      files: FileItem[]; // The folder's files when it was picked; buttons refer to them by position
+      selected: string[]; // IDs of the files marked for removal
+      page: number; // 0-based page of the file list
     }
   | { kind: 'clear-data' };
 

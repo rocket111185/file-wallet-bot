@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { Composer, InlineQueryResultBuilder } from 'grammy';
 import type { InlineQueryResult } from 'grammy/types';
 import type { BaseContext } from 'src/bot/context';
-import { fileDisplayName } from 'src/bot/utils';
+import { fileDisplayName, uniqueFiles } from 'src/bot/utils';
 import type { Translate } from 'src/i18n/i18n';
 import type { FileItem } from 'src/types';
 import { escapeHtml } from 'src/utils';
@@ -114,9 +114,8 @@ export const handleInlineQuery = async (ctx: BaseContext, cacheSeconds = DEFAULT
     return;
   }
 
-  // Telegram rejects the whole answer if two results share an id (RESULT_ID_DUPLICATE),
-  // so drop repeats that older versions could have stored
-  const files = [...new Map(filesRes.data.map((file) => [file.id, file])).values()];
+  // Telegram rejects the whole answer if two results share an id (RESULT_ID_DUPLICATE)
+  const files = uniqueFiles(filesRes.data);
 
   if (files.length === 0) {
     await ctx.answerInlineQuery(
