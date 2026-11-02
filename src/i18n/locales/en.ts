@@ -72,6 +72,14 @@ export const en = {
   'rename-folder-success': (p: { oldName: string; newName: string }) =>
     `✅ Folder <b>${p.oldName}</b> renamed to <b>${p.newName}</b>.`,
 
+  // --- /copy_folder ---
+  'copy-folder-no-folders': "⚠️ You don't have any folders to copy.",
+  'copy-folder-choose-folder': 'Choose a folder to copy:',
+  'copy-folder-prompt': (p: { name: string; max: number }) =>
+    `Send me the name for the copy of <b>${p.name}</b> (1–${p.max} characters):`,
+  'copy-folder-success': (p: { name: string; newName: string; count: number }) =>
+    `✅ Copied ${plural('en', p.count, { one: '1 file', other: `${p.count} files` })} from <b>${p.name}</b> to the new folder <b>${p.newName}</b>.`,
+
   // --- /remove_folder ---
   'remove-folder-no-folders': "⚠️ You don't have any folders to remove.",
   'remove-folder-choose-folder': 'Choose a folder to delete:',

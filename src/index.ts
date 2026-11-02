@@ -1,11 +1,12 @@
 import { webhookCallback } from 'grammy';
 
 import { createWorkerBot } from 'src/bot/worker-bot';
-import { CloudflareKVDatabase } from 'src/db/db.cloudflare';
+import { CloudflareDODatabase } from 'src/db/db.cloudflare-do';
 import { logger } from 'src/logger';
 
 // Durable Object classes must be exported from the main module
 export { UserChat } from 'src/bot/user-chat';
+export { UserVault } from 'src/db/db.cloudflare-do';
 
 /**
  * INLINE_CACHE_SECONDS can be edited in the dashboard, where it may arrive as text, so it is parsed
@@ -26,7 +27,7 @@ export default {
       return new Response('Server misconfigured', { status: 500 });
     }
 
-    const db = new CloudflareKVDatabase(env.BOT_KV_VAULT);
+    const db = new CloudflareDODatabase(env.USER_VAULT);
 
     const bot = createWorkerBot({
       token: env.BOT_TOKEN,

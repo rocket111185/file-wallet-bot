@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { createTestBot, USER_ID } from './helpers';
+import { createTestBot } from './helpers';
 
 const setup = async () => {
   const bot = createTestBot();
   const workId = await bot.addFolder('Work');
   const homeId = await bot.addFolder('Home');
-  await bot.db.addFiles(USER_ID, workId, [
+  await bot.db.addFiles(bot.userId, workId, [
     { id: 'a', name: 'a.pdf', type: 'document' },
     { id: 'b', name: 'b.pdf', type: 'document' },
   ]);
@@ -97,6 +97,61 @@ describe('/rename_folder', () => {
   });
 });
 
+describe('/copy_folder', () => {
+  it('copies all files of the picked folder into a new folder', async () => {
+    const bot = await setup();
+    await bot.send('/copy_folder');
+    await bot.press(`cpf:select:${bot.workId}`);
+    expect(bot.lastText()).toContain('copy of <b>Work</b>');
+
+    await bot.send('Work 2');
+    expect(bot.lastText()).toBe('✅ Copied 2 files from <b>Work</b> to the new folder <b>Work 2</b>.');
+    expect(bot.flow()).toBeNull();
+
+    const folders = await bot.folders();
+    expect(folders.map((f) => f.name)).toEqual(['Work', 'Home', 'Work 2']);
+    const copy = await bot.db.listFiles(bot.userId, folders[2].id);
+    const original = await bot.db.listFiles(bot.userId, bot.workId);
+    expect(copy).toEqual(original);
+  });
+
+  it('keeps asking when the name is taken', async () => {
+    const bot = await setup();
+    await bot.send('/copy_folder');
+    await bot.press(`cpf:select:${bot.workId}`);
+
+    await bot.send('home');
+    expect(bot.lastText()).toContain('already exists');
+    expect(bot.flow()?.kind).toBe('copy-folder');
+
+    await bot.send('Office');
+    expect(await names(bot)).toEqual(['Work', 'Home', 'Office']);
+  });
+
+  it('copies an empty folder', async () => {
+    const bot = await setup();
+    await bot.send('/copy_folder');
+    await bot.press(`cpf:select:${bot.homeId}`);
+    await bot.send('Home 2');
+    expect(bot.lastText()).toBe('✅ Copied 0 files from <b>Home</b> to the new folder <b>Home 2</b>.');
+  });
+
+  it('cancels', async () => {
+    const bot = await setup();
+    await bot.send('/copy_folder');
+    await bot.press('cpf:cancel');
+    expect(bot.lastText()).toBe('Action cancelled.');
+    expect(bot.flow()).toBeNull();
+    expect(await names(bot)).toEqual(['Work', 'Home']);
+  });
+
+  it('warns when the user has no folders', async () => {
+    const bot = createTestBot();
+    await bot.send('/copy_folder');
+    expect(bot.lastText()).toBe("⚠️ You don't have any folders to copy.");
+  });
+});
+
 describe('/remove_folder', () => {
   it('asks for confirmation, then deletes the folder and its files', async () => {
     const bot = await setup();
@@ -108,7 +163,7 @@ describe('/remove_folder', () => {
     await bot.press('rmf:confirm');
     expect(bot.lastText()).toBe('✅ Folder <b>Work</b> and its files have been deleted.');
     expect(await names(bot)).toEqual(['Home']);
-    expect(bot.data.has(`files:${USER_ID}:${bot.workId}`)).toBe(false);
+    expect(await bot.db.listFiles(bot.userId, bot.workId)).toEqual({ error: false, data: [] });
   });
 
   it('cancels without deleting', async () => {
@@ -146,7 +201,8 @@ describe('/clear_data', () => {
     await bot.send('/clear_data');
     await bot.press('cd:confirm');
     expect(bot.lastText()).toBe('🧹 All your data has been completely and permanently erased.');
-    expect(bot.data.size).toBe(0);
+    expect(await bot.folders()).toEqual([]);
+    expect(await bot.db.listFiles(bot.userId, bot.workId)).toEqual({ error: false, data: [] });
     expect(bot.flow()).toBeNull();
   });
 

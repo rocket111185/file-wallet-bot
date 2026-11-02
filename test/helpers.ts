@@ -1,11 +1,15 @@
+import { env } from 'cloudflare:workers';
 import { MemorySessionStorage } from 'grammy';
 import type { Message, Update, UserFromGetMe } from 'grammy/types';
 
 import { createChatBot } from 'src/bot/chat-bot';
+import { CloudflareDODatabase } from 'src/db/db.cloudflare-do';
 import { CloudflareKVDatabase } from 'src/db/db.cloudflare';
 import type { UserSession } from 'src/session/session';
 
-export const USER_ID = 1;
+// Each test bot is a different user, so it gets a fresh UserVault: objects keep their storage
+// between tests. Random, so test files running side by side don't collide either.
+let nextUserId = Math.floor(Math.random() * 1e9) * 1000;
 
 /** In-memory stand-in for KV, enough for CloudflareKVDatabase */
 export const createMemoryKV = () => {
@@ -23,12 +27,14 @@ export const createMemoryKV = () => {
 };
 
 /**
- * The real chat bot, with an in-memory KV and session storage and a fake Telegram API that records
- * every call instead of sending it
+ * The real chat bot, with a fake Telegram API that records every call instead of sending it and an
+ * in-memory session storage. Folders and files go to a real UserVault Durable Object (as in
+ * production), or to an in-memory KV with `storage: 'kv'`; `data` is that KV's content.
  */
-export const createTestBot = () => {
+export const createTestBot = ({ storage = 'do' }: { storage?: 'do' | 'kv' } = {}) => {
+  const userId = ++nextUserId;
   const { kv, data } = createMemoryKV();
-  const db = new CloudflareKVDatabase(kv);
+  const db = storage === 'do' ? new CloudflareDODatabase(env.USER_VAULT) : new CloudflareKVDatabase(kv);
   const sessions = new MemorySessionStorage<UserSession>();
 
   const bot = createChatBot({
@@ -44,7 +50,7 @@ export const createTestBot = () => {
   bot.api.config.use(async (_prev, method, payload) => {
     calls.push({ method, payload: payload as Record<string, unknown> });
     if (method === 'sendMessage') lastSentId = ++messageId;
-    const result = method === 'sendMessage' ? { message_id: lastSentId, date: 0, chat: { id: USER_ID } } : true;
+    const result = method === 'sendMessage' ? { message_id: lastSentId, date: 0, chat: { id: userId } } : true;
     return { ok: true, result } as never;
   });
 
@@ -52,8 +58,8 @@ export const createTestBot = () => {
   const lastMessageId = () => lastSentId;
 
   let updateId = 0;
-  const from = { id: USER_ID, is_bot: false, first_name: 'User', language_code: 'en' };
-  const chat = { id: USER_ID, type: 'private' as const, first_name: 'User' };
+  const from = { id: userId, is_bot: false, first_name: 'User', language_code: 'en' };
+  const chat = { id: userId, type: 'private' as const, first_name: 'User' };
 
   /** Sends a message from the user; `text` starting with "/" is a command */
   const send = (message: string | Partial<Message>) => {
@@ -92,20 +98,20 @@ export const createTestBot = () => {
   /** Alert text of the last answered button press */
   const lastAlert = () => calls.filter((c) => c.method === 'answerCallbackQuery').at(-1)?.payload.text;
 
-  const flow = () => sessions.read(String(USER_ID))?.flow ?? null;
+  const flow = () => sessions.read(String(userId))?.flow ?? null;
 
   const folders = async () => {
-    const res = await db.listFolders(USER_ID);
+    const res = await db.listFolders(userId);
     return res.error ? [] : res.data;
   };
 
   const addFolder = async (name: string) => {
-    const res = await db.addFolder(USER_ID, name);
+    const res = await db.addFolder(userId, name);
     if (res.error) throw new Error(res.key);
     return res.data.id;
   };
 
-  return { bot, db, data, calls, send, press, lastText, lastAlert, lastMessageId, flow, folders, addFolder };
+  return { bot, db, data, userId, calls, send, press, lastText, lastAlert, lastMessageId, flow, folders, addFolder };
 };
 
 export const photo = (fileId: string, media_group_id?: string): Partial<Message> =>

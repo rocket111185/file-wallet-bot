@@ -16,6 +16,10 @@ const run = async (query: string, folders: FolderInfo[], files: Record<string, F
   const db = {
     listFolders: async () => ({ error: false, data: folders }),
     listFiles: async (_: unknown, folderId: string) => ({ error: false, data: files[folderId] ?? [] }),
+    getFolderContents: async (_: unknown, n: number) => {
+      const folder = folders[n - 1];
+      return { error: false, data: folder ? { folder, files: files[folder.id] ?? [] } : null };
+    },
   } as unknown as Database;
   const { html, text } = createTranslator('en');
 

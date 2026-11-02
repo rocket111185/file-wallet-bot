@@ -11,8 +11,9 @@ This document describes the architecture, database schema, and detailed conversa
 ### Core Architecture Principles
 * **Runtime**: [Cloudflare Workers](https://developers.cloudflare.com/workers/) using [grammY](https://grammy.dev/).
 * **Zero-Cost Storage Strategy**: The bot **does not** store binary files. It stores Telegram's internal `file_id` references. When a user requests or shares a file, Telegram servers deliver it directly.
-* **Database**: [Cloudflare Workers KV](https://developers.cloudflare.com/kv/) stores folders and file metadata. Reads are cheap and fast, which suits inline mode, where most traffic is.
-* **Sessions**: one [Durable Object](https://developers.cloudflare.com/durable-objects/) per user (`UserChat`, SQLite storage) handles all updates from the user's private chat, one at a time, and keeps their session. Inline queries are answered directly by the Worker and never reach it.
+* **Database**: one [Durable Object](https://developers.cloudflare.com/durable-objects/) per user (`UserVault`) keeps their folders and file metadata in its own SQLite database. Both the Worker (inline mode) and `UserChat` (chat commands) reach it over RPC. Writes are local to the object and strongly consistent, and inline mode opens a folder in a single call.
+* **Sessions**: another Durable Object per user (`UserChat`, SQLite storage) handles all updates from the user's private chat, one at a time, and keeps their session. Inline queries are answered directly by the Worker and never reach it.
+* **Alternative storage**: folders and files used to live in [Workers KV](https://developers.cloudflare.com/kv/). That implementation (`src/db/db.cloudflare.ts`) is kept as an alternative `Database`, but the bot doesn't use it (section 2.3).
 
 ---
 
@@ -63,12 +64,12 @@ The `Database` interface is solely responsible for persistent domain data: manag
 All database operations are **asynchronous** and scoped by `userId` (Telegram user ID) to ensure multi-tenant isolation:
 
 ```typescript
-import type { FileItem, FolderInfo, Status } from 'src/types';
+import type { FileItem, FolderContents, FolderInfo, Status } from 'src/types';
 
 export interface Database {
   // Folder operations
   addFolder(userId: string | number, name: string): Promise<Status<{ id: string }>>;
-  renameFolder?(userId: string | number, folderId: string, newName: string): Promise<Status>;
+  renameFolder(userId: string | number, folderId: string, newName: string): Promise<Status>;
   removeFolder(userId: string | number, folderId: string): Promise<Status>;
   listFolders(userId: string | number): Promise<Status<FolderInfo[]>>;
 
@@ -77,24 +78,32 @@ export interface Database {
   removeFiles(userId: string | number, folderId: string, fileIds: string[]): Promise<Status>;
   listFiles(userId: string | number, folderId: string): Promise<Status<FileItem[]>>;
 
+  // Folder at 1-based position `folderNumber` (listFolders order) with its files, for inline mode; null if none
+  getFolderContents(userId: string | number, folderNumber: number): Promise<Status<FolderContents | null>>;
+
   // User teardown
   clearUserData(userId: string | number): Promise<Status>;
 }
 ```
 
-### 2.3 Cloudflare KV Storage Schema
+### 2.3 Storage Schema
 
-Data is partitioned cleanly between persistent bot data (handled by `Database`) and conversation state (handled by `grammY` session adapter):
+Data is partitioned cleanly between persistent bot data (handled by `Database`) and conversation state (handled by `grammY` session adapter). They live in two different Durable Objects, and neither touches the other's storage.
 
-#### A. Database Storage (Managed by `Database`)
-1. **User Folders**:
-   * **Key**: `folders:${userId}`
-   * **Value**: Serialized `FolderInfo[]` (`[{ id, name }]`).
-2. **Folder Contents**:
-   * **Key**: `files:${userId}:${folderId}`
-   * **Value**: Serialized `FileItem[]` representing all files saved in that specific folder.
+#### A. Database Storage (Durable Object `UserVault`, `src/db/db.cloudflare-do.ts`)
+* **Object**: one per user, named by the user ID, via `env.USER_VAULT.getByName(userId)`. `CloudflareDODatabase` implements `Database` with one RPC per call.
+* **Schema** (`src/db/schemas/user-vault.ts`, applied when the object starts):
+  * `folders (id PK, name, position)`: inline folder number = rank by `position`.
+  * `files (folder_id, file_id, position, name, type, PK (folder_id, file_id))`: the primary key also rejects the same file twice in one folder.
+  * Tables are `WITHOUT ROWID`, so each inserted or deleted row is billed as exactly one row written.
+* **Atomicity**: every method is synchronous, so calls never interleave and each is committed atomically. The object belongs to one user, so its methods take no user ID.
 
-#### B. Session Storage (Durable Object `UserChat`, not KV)
+#### B. KV Layout (`CloudflareKVDatabase`, `src/db/db.cloudflare.ts`)
+Kept as an alternative `Database`; not wired into the bot:
+1. **User Folders**: key `folders:${userId}`, value: serialized `FolderInfo[]` (`[{ id, name }]`).
+2. **Folder Contents**: key `files:${userId}:${folderId}`, value: serialized `FileItem[]`.
+
+#### C. Session Storage (Durable Object `UserChat`, not KV)
 * **Object**: one per user, named by the private chat ID (equal to the user ID), via `env.USER_CHAT.getByName(chatId)`.
 * **Key**: the user ID, inside that object's own storage (grammY's session key).
 * **Value**: `UserSession` tracking transient conversation state.
@@ -115,7 +124,7 @@ Whatever the storage, a user's updates must be handled one at a time (see the no
 Sessions exist only in the private chat with the bot. There are two bots, sharing their setup (`src/bot/base.ts`):
 * **Worker bot** (`src/bot/worker-bot.ts`, runs on every webhook request):
   * Has no session; its context type (`BaseContext`) has no `ctx.session`.
-  * Answers inline queries itself, from KV (`src/bot/features/inline.ts`).
+  * Answers inline queries itself, from the user's `UserVault` (`src/bot/features/inline.ts`).
   * Forwards every private-chat update over RPC to the user's `UserChat`.
 * **Chat bot** (`src/bot/chat-bot.ts`, runs inside `UserChat`):
   * Reads the session from `SessionStorage` before each update and writes it back after.
@@ -266,7 +275,7 @@ Shared helpers:
 5. **Saving / Finalizing**:
    * When user clicks `[ 💾 Save ]`:
      * If `flow.files.length === 0`, alerts user via callback query: *"⚠️ No files to save."*
-     * Appends `flow.files` to `files:${userId}:${folderId}` in KV.
+     * Appends `flow.files` to the folder (`db.addFiles`); files it already has are skipped.
      * Deletes the dynamic status message.
      * Sends: *"✅ Successfully saved {count} file(s) to '{folderName}'."*
      * Ends the flow (`flow = null`).
@@ -318,8 +327,7 @@ Buttons stay on old messages after their flow ended or another command replaced 
        * `[ ❌ Cancel ]` (callback `rmf:cancel`)
 4. **Execution**:
    * If confirmed:
-     * Deletes `files:${userId}:${folderId}` from KV.
-     * Removes folder from user's `folders` list. The folders after it move up one inline number.
+     * Deletes the folder and its files (`db.removeFolder`). The folders after it move up one inline number.
      * Edits message to: *"✅ Folder **{folderName}** and its files have been deleted."*
      * Ends the flow (`flow = null`).
    * If cancelled:
@@ -362,7 +370,7 @@ Buttons stay on old messages after their flow ended or another command replaced 
    * If user clicks Delete with 0 files selected:
      * Alerts via `answerCallbackQuery`: *"⚠️ Please select at least one file to delete."*
    * If files are selected:
-     * Removes selected file IDs from KV (`db.removeFiles`).
+     * Removes the selected files (`db.removeFiles`).
      * Edits the menu to: *"✅ Removed {count} file(s) from **{folderName}**."*
      * Ends the flow (`flow = null`).
    * Cancel: edits the menu to *"Action cancelled."* and ends the flow, if it is this menu's flow.
@@ -380,7 +388,7 @@ Buttons stay on old messages after their flow ended or another command replaced 
        * `[ ❌ Cancel ]` (callback `cd:cancel`)
 2. **Execution**:
    * On confirmation:
-     * Calls `db.clearUserData(userId)` to delete the folder list and every `files:${userId}:*` key in KV.
+     * Calls `db.clearUserData(userId)` to delete all folders and files.
      * Resets session to defaults (`ctx.session = initialSession()`).
      * Edits message to: *"🧹 All your data has been completely and permanently erased."*
    * On cancel:
@@ -459,16 +467,9 @@ Folder numbers are the folder's 1-based position in the user's folder list (`fol
 
 1. **Webhook Security**:
    * Verify the `X-Telegram-Bot-Api-Secret-Token` header on incoming POST requests to ensure updates originate from Telegram.
-2. **Cloudflare KV Configuration**:
-   * In `wrangler.jsonc`, configure the KV namespace binding (e.g. `BOT_KV_VAULT`):
-     ```jsonc
-     "kv_namespaces": [
-       {
-         "binding": "BOT_KV_VAULT",
-         "id": "<production-kv-id>",
-         "preview_id": "<preview-kv-id>"
-       }
-     ]
-     ```
+2. **Cloudflare Configuration** (`wrangler.jsonc`):
+   * Durable Objects `USER_CHAT` (`UserChat`) and `USER_VAULT` (`UserVault`), both declared in `exports` with `"storage": "sqlite"`.
+   * KV namespace `BOT_KV_VAULT`: only for `CloudflareKVDatabase`; the bot doesn't use it.
+   * Tests run with `remoteBindings: false` (`vitest.config.mts`), so they never reach the production KV namespace.
 3. **Error Boundaries**:
    * Register a global error handler (`bot.catch(...)`) to prevent worker crashes on unexpected API errors (such as a blocked bot or modified messages).

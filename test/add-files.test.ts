@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { createTestBot, photo, USER_ID } from './helpers';
+import { createTestBot, photo } from './helpers';
 
 const setup = async () => {
   const bot = createTestBot();
@@ -13,7 +13,7 @@ const setup = async () => {
     return flow?.kind === 'add-files' ? flow.files.map((f) => f.id) : [];
   };
   const savedIds = async () => {
-    const res = await bot.db.listFiles(USER_ID, workId);
+    const res = await bot.db.listFiles(bot.userId, workId);
     return res.error ? [] : res.data.map((f) => f.id);
   };
   return { ...bot, workId, pendingIds, savedIds };

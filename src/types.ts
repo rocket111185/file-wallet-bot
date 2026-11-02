@@ -38,3 +38,9 @@ export type FolderInfo = {
   id: string;
   name: string;
 };
+
+/** A folder together with its files, as inline mode shows it */
+export type FolderContents = {
+  folder: FolderInfo;
+  files: FileItem[];
+};

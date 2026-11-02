@@ -2,7 +2,7 @@ import type { InlineKeyboardButton } from 'grammy/types';
 import { describe, expect, it } from 'vitest';
 
 import type { FileItem } from 'src/types';
-import { createTestBot, USER_ID } from './helpers';
+import { createTestBot } from './helpers';
 
 const doc = (id: string): FileItem => ({ id, name: `${id}.pdf`, type: 'document' });
 
@@ -11,7 +11,7 @@ const setup = async (count: number) => {
   const bot = createTestBot();
   const workId = await bot.addFolder('Work');
   await bot.db.addFiles(
-    USER_ID,
+    bot.userId,
     workId,
     Array.from({ length: count }, (_, i) => doc(`f${i}`)),
   );
@@ -32,7 +32,7 @@ const setup = async (count: number) => {
   };
 
   const savedIds = async () => {
-    const res = await bot.db.listFiles(USER_ID, workId);
+    const res = await bot.db.listFiles(bot.userId, workId);
     return res.error ? [] : res.data.map((f) => f.id);
   };
 
@@ -110,10 +110,11 @@ describe('/remove_files', () => {
     expect(bot.calls.slice(edits).map((c) => c.method)).toEqual(['answerCallbackQuery']);
   });
 
+  // UserVault can't store a file twice in one folder, but old KV data may have duplicates
   it('shows each file once even if it was stored twice', async () => {
-    const bot = createTestBot();
+    const bot = createTestBot({ storage: 'kv' });
     const workId = await bot.addFolder('Work');
-    bot.data.set(`files:${USER_ID}:${workId}`, JSON.stringify([doc('a'), doc('a'), doc('b')]));
+    bot.data.set(`files:${bot.userId}:${workId}`, JSON.stringify([doc('a'), doc('a'), doc('b')]));
     await bot.send('/remove_files');
     await bot.press(`rf:select:${workId}`, bot.lastMessageId());
     const flow = bot.flow();

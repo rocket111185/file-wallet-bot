@@ -1,15 +1,15 @@
 import type { Database } from 'src/db/db.interface';
+import { validateFolderName } from 'src/db/validation';
 import { logger } from 'src/logger';
 import {
   DB_ERROR_KEYS,
-  MAX_FOLDER_NAME_LENGTH,
   type DbErrorKey,
   type FileItem,
+  type FolderContents,
   type FolderInfo,
   type Status,
-  type StatusError,
 } from 'src/types';
-import { generateId, graphemeLength, sameName } from 'src/utils';
+import { generateId, sameName } from 'src/utils';
 
 export class CloudflareKVDatabase implements Database {
   constructor(private readonly kv: KVNamespace) {}
@@ -48,18 +48,10 @@ export class CloudflareKVDatabase implements Database {
     }
   }
 
-  private validateFolderName(name: string): StatusError | null {
-    const length = graphemeLength(name);
-    if (length === 0 || length > MAX_FOLDER_NAME_LENGTH) {
-      return { error: true, key: DB_ERROR_KEYS.FOLDER_NAME_LENGTH, params: { max: MAX_FOLDER_NAME_LENGTH } };
-    }
-    return null;
-  }
-
   async addFolder(userId: string | number, name: string): Promise<Status<{ id: string }>> {
     return this.run('addFolder', DB_ERROR_KEYS.DB_ADD_FOLDER, { userId }, async () => {
       const trimmedName = name.trim();
-      const invalid = this.validateFolderName(trimmedName);
+      const invalid = validateFolderName(trimmedName);
       if (invalid) return invalid;
 
       const folders = await this.readFolders(userId);
@@ -78,7 +70,7 @@ export class CloudflareKVDatabase implements Database {
   async renameFolder(userId: string | number, folderId: string, newName: string): Promise<Status> {
     return this.run('renameFolder', DB_ERROR_KEYS.DB_RENAME_FOLDER, { userId, folderId }, async () => {
       const trimmedName = newName.trim();
-      const invalid = this.validateFolderName(trimmedName);
+      const invalid = validateFolderName(trimmedName);
       if (invalid) return invalid;
 
       const folders = await this.readFolders(userId);
@@ -167,6 +159,15 @@ export class CloudflareKVDatabase implements Database {
       error: false,
       data: await this.readFiles(userId, folderId),
     }));
+  }
+
+  async getFolderContents(userId: string | number, folderNumber: number): Promise<Status<FolderContents | null>> {
+    return this.run('getFolderContents', DB_ERROR_KEYS.DB_LIST_FILES, { userId, folderNumber }, async () => {
+      // Two reads one after the other: the files key needs the folder ID from the folder list
+      const folder = (await this.readFolders(userId))[folderNumber - 1];
+      if (!folder) return { error: false, data: null };
+      return { error: false, data: { folder, files: await this.readFiles(userId, folder.id) } };
+    });
   }
 
   async clearUserData(userId: string | number): Promise<Status> {

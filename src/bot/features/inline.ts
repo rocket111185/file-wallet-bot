@@ -68,17 +68,17 @@ export const handleInlineQuery = async (ctx: BaseContext, cacheSeconds = DEFAULT
   const offset = Number(ctx.inlineQuery.offset) || 0;
   const errorResult = () => info('err', t('inline-error-title'), t('inline-error-description'));
 
-  const foldersRes = await ctx.db.listFolders(userId);
-  if (foldersRes.error) {
-    await ctx.answerInlineQuery([errorResult()], opts);
-    return;
-  }
-  const folders = foldersRes.data; // Folder number = position in this list + 1
-
   const folderNumber = parseFolderNumber(ctx.inlineQuery.query);
 
   // ---- Folder list ----
   if (folderNumber === null) {
+    const foldersRes = await ctx.db.listFolders(userId);
+    if (foldersRes.error) {
+      await ctx.answerInlineQuery([errorResult()], opts);
+      return;
+    }
+    const folders = foldersRes.data; // Folder number = position in this list + 1
+
     if (folders.length === 0) {
       await ctx.answerInlineQuery(
         [info('none', t('inline-no-folders-title'), t('inline-no-folders-description'))],
@@ -99,23 +99,24 @@ export const handleInlineQuery = async (ctx: BaseContext, cacheSeconds = DEFAULT
   }
 
   // ---- Files in folder ----
-  const folder = folders[folderNumber - 1];
-  if (!folder) {
+  // One call: the folder is looked up by number and its files are read together
+  const contentsRes = await ctx.db.getFolderContents(userId, folderNumber);
+  if (contentsRes.error) {
+    await ctx.answerInlineQuery([errorResult()], opts);
+    return;
+  }
+
+  if (!contentsRes.data) {
     await ctx.answerInlineQuery(
       [info('nofolder', t('inline-unknown-folder-title', { n: folderNumber }), t('inline-unknown-folder-description'))],
       opts,
     );
     return;
   }
-
-  const filesRes = await ctx.db.listFiles(userId, folder.id);
-  if (filesRes.error) {
-    await ctx.answerInlineQuery([errorResult()], opts);
-    return;
-  }
+  const { folder, files: storedFiles } = contentsRes.data;
 
   // Telegram rejects the whole answer if two results share an id (RESULT_ID_DUPLICATE)
-  const files = uniqueFiles(filesRes.data);
+  const files = uniqueFiles(storedFiles);
 
   if (files.length === 0) {
     await ctx.answerInlineQuery(
@@ -132,7 +133,7 @@ export const handleInlineQuery = async (ctx: BaseContext, cacheSeconds = DEFAULT
   );
 };
 
-/** Inline mode: answered by the Worker straight from KV, without a session */
+/** Inline mode: answered by the Worker straight from the user's UserVault, without a session */
 export const createInline = (cacheSeconds = DEFAULT_CACHE_SECONDS): Composer<BaseContext> => {
   const inline = new Composer<BaseContext>();
   inline.on('inline_query', (ctx) => handleInlineQuery(ctx, cacheSeconds));

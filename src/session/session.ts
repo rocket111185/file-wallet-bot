@@ -22,6 +22,10 @@ export type Flow =
       folder: FolderInfo | null; // null until a folder is picked
     }
   | {
+      kind: 'copy-folder';
+      folder: FolderInfo | null; // Folder to copy; null until picked
+    }
+  | {
       kind: 'remove-folder';
       folder: FolderInfo | null; // null until a folder is picked
     }

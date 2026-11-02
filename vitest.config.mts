@@ -14,6 +14,8 @@ export default defineConfig({
   plugins: [
     cloudflareTest({
       wrangler: { configPath: './wrangler.jsonc' },
+      // The KV binding is `remote: true` in wrangler.jsonc: without this, tests would hit the production namespace
+      remoteBindings: false,
     }),
   ],
 });
