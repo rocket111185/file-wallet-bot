@@ -10,6 +10,16 @@ export const generateId = (byteLength: number = 9): string => {
 };
 
 /**
+ * Splits an array into consecutive pieces of at most `size` items (the last one may be shorter)
+ */
+export const chunk = <T>(items: readonly T[], size: number): T[][] => {
+  if (!Number.isInteger(size) || size < 1) throw new RangeError(`Chunk size must be a positive integer, got ${size}`);
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
+  return chunks;
+};
+
+/**
  * Escapes a string for Telegram's HTML parse mode
  */
 export const escapeHtml = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -38,4 +48,5 @@ export const createSerialQueue = () => {
 /**
  * Case-insensitive name comparison that also works outside of plain ASCII
  */
-export const sameName = (a: string, b: string): boolean => a.localeCompare(b, undefined, { sensitivity: 'accent' }) === 0;
+export const sameName = (a: string, b: string): boolean =>
+  a.localeCompare(b, undefined, { sensitivity: 'accent' }) === 0;

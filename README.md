@@ -13,8 +13,17 @@ The Telegram bot intended to organize files in a simple way
    npx wrangler secret put BOT_TOKEN
    npx wrangler secret put BOT_WEBHOOK_SECRET   # paste the value from step 1
    ```
-3. Deploy: `npx wrangler deploy`
-4. Register the webhook with the same secret, so the worker can reject forged updates:
+3. Check `wrangler.jsonc`. It's in `.gitignore`, so a fresh clone or another machine won't have your copy,
+   and these two settings at its top level are required:
+   ```jsonc
+   // Required: the Drizzle migrations (drizzle/) are imported as text. Without it the build fails
+   "rules": [{ "type": "Text", "globs": ["**/*.sql"], "fallthrough": true }],
+   // Required: roughly halves the bundle and its startup time. Keep "upload_source_maps": true next to it,
+   // so stack traces in the logs still point at the real source
+   "minify": true,
+   ```
+4. Deploy: `npx wrangler deploy`
+5. Register the webhook with the same secret, so the worker can reject forged updates:
    ```sh
    curl "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
      -d url=https://<worker-url>/ \

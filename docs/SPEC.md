@@ -92,11 +92,12 @@ Data is partitioned cleanly between persistent bot data (handled by `Database`) 
 
 #### A. Database Storage (Durable Object `UserVault`, `src/db/db.cloudflare-do.ts`)
 * **Object**: one per user, named by the user ID, via `env.USER_VAULT.getByName(userId)`. `CloudflareDODatabase` implements `Database` with one RPC per call.
-* **Schema** (`src/db/schemas/user-vault.ts`, applied when the object starts):
+* **Schema** (Drizzle ORM, `src/db/schemas/user-vault.ts`):
   * `folders (id PK, name, position)`: inline folder number = rank by `position`.
   * `files (folder_id, file_id, position, name, type, PK (folder_id, file_id))`: the primary key also rejects the same file twice in one folder.
-  * Tables are `WITHOUT ROWID`, so each inserted or deleted row is billed as exactly one row written.
-* **Atomicity**: every method is synchronous, so calls never interleave and each is committed atomically. The object belongs to one user, so its methods take no user ID.
+* **Migrations**: `npm run db:generate` (drizzle-kit) writes them to `drizzle/user-vault`; they're never edited by hand. Each vault applies pending ones in its constructor, synchronously and in one transaction, before it takes any call.
+* **Batched writes**: a SQLite-backed Durable Object accepts at most 100 bound parameters per statement, so `addFiles` inserts and `removeFiles` deletes in batches of 10 rows or IDs (`FILE_WRITE_BATCH`), all inside one transaction. The size is fixed with a margin rather than computed from the column count: 10 rows fit as long as `files` has at most 10 columns (5 today), and the multi-batch tests fail if a batch ever outgrows the limit.
+* **Atomicity**: methods are async, but every check-then-write (e.g. the duplicate-name check and the insert in `addFolder`) runs in one synchronous `db.transaction`, so it's atomic and no other call can interleave with it. The object belongs to one user, so its methods take no user ID.
 
 #### B. KV Layout (`CloudflareKVDatabase`, `src/db/db.cloudflare.ts`)
 Kept as an alternative `Database`; not wired into the bot:
@@ -467,9 +468,11 @@ Folder numbers are the folder's 1-based position in the user's folder list (`fol
 
 1. **Webhook Security**:
    * Verify the `X-Telegram-Bot-Api-Secret-Token` header on incoming POST requests to ensure updates originate from Telegram.
-2. **Cloudflare Configuration** (`wrangler.jsonc`):
+2. **Cloudflare Configuration** (`wrangler.jsonc`, kept out of git; the README lists what a fresh copy must contain):
    * Durable Objects `USER_CHAT` (`UserChat`) and `USER_VAULT` (`UserVault`), both declared in `exports` with `"storage": "sqlite"`.
-   * KV namespace `BOT_KV_VAULT`: only for `CloudflareKVDatabase`; the bot doesn't use it.
-   * Tests run with `remoteBindings: false` (`vitest.config.mts`), so they never reach the production KV namespace.
+   * `rules` with `{ "type": "Text", "globs": ["**/*.sql"], "fallthrough": true }`: required, so the Drizzle migrations (`drizzle/`) can be imported as text.
+   * `"minify": true`: required. It roughly halves the bundle (about 480 KiB to 250 KiB, most of it Drizzle and grammY) and the startup CPU time. `"upload_source_maps": true` keeps stack traces in the logs pointing at the real source.
+   * No KV namespace is declared, since the bot doesn't use KV. `CloudflareKVDatabase` would need one added back.
+   * Tests run with `remoteBindings: false` (`vitest.config.mts`), so they never reach production resources.
 3. **Error Boundaries**:
    * Register a global error handler (`bot.catch(...)`) to prevent worker crashes on unexpected API errors (such as a blocked bot or modified messages).

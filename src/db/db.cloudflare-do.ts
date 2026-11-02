@@ -1,7 +1,11 @@
 import { DurableObject } from 'cloudflare:workers';
+import { and, asc, eq, inArray, max } from 'drizzle-orm';
+import { drizzle, type DrizzleSqliteDODatabase } from 'drizzle-orm/durable-sqlite';
+import { migrate } from 'drizzle-orm/durable-sqlite/migrator';
 
+import migrations from '../../drizzle/user-vault/migrations';
 import type { Database } from 'src/db/db.interface';
-import { USER_VAULT_SCHEMA, type FileRow, type FolderRow } from 'src/db/schemas/user-vault';
+import { files, folders, type FileRow, type FolderRow } from 'src/db/schemas/user-vault';
 import { validateFolderName } from 'src/db/validation';
 import { logger } from 'src/logger';
 import {
@@ -13,172 +17,211 @@ import {
   type Status,
   type TelegramFileType,
 } from 'src/types';
-import { generateId, sameName } from 'src/utils';
+import { chunk, generateId, sameName } from 'src/utils';
 
 type UserId = string | number;
 
-const toFileItem = (row: FileRow): FileItem => ({
-  id: row.file_id,
+type VaultDb = DrizzleSqliteDODatabase;
+/** What `db.transaction` hands its callback; queries on it must use the synchronous `.all/.get/.run` */
+type VaultTx = Parameters<Parameters<VaultDb['transaction']>[0]>[0];
+
+/**
+ * A SQLite-backed Durable Object accepts at most 100 bound parameters per statement
+ * (https://developers.cloudflare.com/durable-objects/platform/limits/), so bulk writes go in batches.
+ * The size is fixed with a wide margin instead of computed to sit right at the limit.
+ *
+ * - Insert into `files`: a row binds one parameter per column, so 10 rows fit for up to 10 columns
+ *   (5 today). The multi-batch tests in test/db.cloudflare-do.test.ts fail if that ever stops holding.
+ * - `DELETE ... WHERE folder_id = ? AND file_id IN (...)`: binds 1 + 10 parameters.
+ */
+const FILE_WRITE_BATCH = 10;
+
+const toFileItem = (row: Pick<FileRow, 'fileId' | 'name' | 'type'>): FileItem => ({
+  id: row.fileId,
   name: row.name,
   type: row.type as TelegramFileType,
 });
 
 /**
  * One instance per user (named by the user ID) holding their folders and files in its own SQLite
- * database (schema: src/db/schemas/user-vault.ts). It's deliberately not UserChat: that object owns
- * the session, this one owns the permanent data, and neither touches the other's storage.
+ * database (schema: src/db/schemas/user-vault.ts, migrations: drizzle/user-vault). It's deliberately
+ * not UserChat: that object owns the session, this one owns the permanent data, and neither touches
+ * the other's storage.
  *
  * Both the Worker (inline mode) and the user's UserChat (chat commands) call it over RPC. The object
- * already belongs to one user, so methods take no user ID. Every method is synchronous: it can't
- * interleave with another call, and its writes are committed atomically.
+ * already belongs to one user, so methods take no user ID.
+ *
+ * Concurrency: every check-then-write runs inside `db.transaction`, whose callback must stay
+ * synchronous (the Drizzle types reject an async one). That keeps the check and the write atomic and
+ * free of interleaving calls, even if a method later awaits something other than storage (a fetch,
+ * another object), which would let another call run at that point.
  */
 export class UserVault extends DurableObject<Env> {
-  private readonly sql: SqlStorage;
+  private readonly db: VaultDb;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.sql = ctx.storage.sql;
-    this.sql.exec(USER_VAULT_SCHEMA);
+    this.db = drizzle(ctx.storage);
+    // Synchronous and in one transaction, so it's done before the object takes its first call
+    migrate(this.db, migrations);
   }
 
   // ---- Folders ----
 
-  addFolder(name: string): Status<{ id: string }> {
+  async addFolder(name: string): Promise<Status<{ id: string }>> {
     const trimmedName = name.trim();
     const invalid = validateFolderName(trimmedName);
     if (invalid) return invalid;
 
-    const folders = this.readFolders();
-    if (folders.some((folder) => sameName(folder.name, trimmedName))) {
-      return { error: true, key: DB_ERROR_KEYS.FOLDER_ALREADY_EXISTS, params: { name: trimmedName } };
-    }
+    return this.db.transaction((tx): Status<{ id: string }> => {
+      const existing = this.readFolders(tx);
+      if (existing.some((folder) => sameName(folder.name, trimmedName))) {
+        return { error: true, key: DB_ERROR_KEYS.FOLDER_ALREADY_EXISTS, params: { name: trimmedName } };
+      }
 
-    // Folder IDs are 12-char base64url strings from 9 random bytes (72 bits of entropy)
-    const id = generateId(9);
-    const position = (folders.at(-1)?.position ?? -1) + 1; // Rows come sorted by position
-    this.sql.exec('INSERT INTO folders (id, name, position) VALUES (?, ?, ?)', id, trimmedName, position);
+      // Folder IDs are 12-char base64url strings from 9 random bytes (72 bits of entropy)
+      const id = generateId(9);
+      const position = (existing.at(-1)?.position ?? -1) + 1; // Rows come sorted by position
+      tx.insert(folders).values({ id, name: trimmedName, position }).run();
 
-    return { error: false, data: { id } };
+      return { error: false, data: { id } };
+    });
   }
 
-  renameFolder(folderId: string, newName: string): Status {
+  async renameFolder(folderId: string, newName: string): Promise<Status> {
     const trimmedName = newName.trim();
     const invalid = validateFolderName(trimmedName);
     if (invalid) return invalid;
 
-    const folders = this.readFolders();
-    if (!folders.some((f) => f.id === folderId)) {
-      return { error: true, key: DB_ERROR_KEYS.FOLDER_NOT_FOUND };
-    }
-    if (folders.some((f) => f.id !== folderId && sameName(f.name, trimmedName))) {
-      return { error: true, key: DB_ERROR_KEYS.FOLDER_ALREADY_EXISTS, params: { name: trimmedName } };
-    }
+    return this.db.transaction((tx): Status => {
+      const existing = this.readFolders(tx);
+      if (!existing.some((f) => f.id === folderId)) {
+        return { error: true, key: DB_ERROR_KEYS.FOLDER_NOT_FOUND };
+      }
+      if (existing.some((f) => f.id !== folderId && sameName(f.name, trimmedName))) {
+        return { error: true, key: DB_ERROR_KEYS.FOLDER_ALREADY_EXISTS, params: { name: trimmedName } };
+      }
 
-    this.sql.exec('UPDATE folders SET name = ? WHERE id = ?', trimmedName, folderId);
-    return { error: false };
-  }
-
-  removeFolder(folderId: string): Status {
-    if (!this.folderExists(folderId)) {
-      return { error: true, key: DB_ERROR_KEYS.FOLDER_NOT_FOUND };
-    }
-
-    this.ctx.storage.transactionSync(() => {
-      this.sql.exec('DELETE FROM files WHERE folder_id = ?', folderId);
-      this.sql.exec('DELETE FROM folders WHERE id = ?', folderId);
+      tx.update(folders).set({ name: trimmedName }).where(eq(folders.id, folderId)).run();
+      return { error: false };
     });
-    return { error: false };
   }
 
-  listFolders(): Status<FolderInfo[]> {
-    return { error: false, data: this.readFolders().map(({ id, name }) => ({ id, name })) };
+  async removeFolder(folderId: string): Promise<Status> {
+    return this.db.transaction((tx): Status => {
+      if (!this.folderExists(tx, folderId)) {
+        return { error: true, key: DB_ERROR_KEYS.FOLDER_NOT_FOUND };
+      }
+
+      tx.delete(files).where(eq(files.folderId, folderId)).run();
+      tx.delete(folders).where(eq(folders.id, folderId)).run();
+      return { error: false };
+    });
+  }
+
+  async listFolders(): Promise<Status<FolderInfo[]>> {
+    const rows = await this.db
+      .select({ id: folders.id, name: folders.name })
+      .from(folders)
+      .orderBy(asc(folders.position));
+    return { error: false, data: rows };
   }
 
   // ---- Files ----
 
-  addFiles(folderId: string, files: FileItem[]): Status {
-    if (files.length === 0) return { error: false };
+  async addFiles(folderId: string, newFiles: FileItem[]): Promise<Status> {
+    if (newFiles.length === 0) return { error: false };
 
-    // Files can't end up in a folder that was removed in the meantime
-    if (!this.folderExists(folderId)) {
-      return { error: true, key: DB_ERROR_KEYS.FOLDER_NOT_FOUND };
-    }
+    return this.db.transaction((tx): Status => {
+      // Files can't end up in a folder that was removed in the meantime
+      if (!this.folderExists(tx, folderId)) {
+        return { error: true, key: DB_ERROR_KEYS.FOLDER_NOT_FOUND };
+      }
 
-    this.ctx.storage.transactionSync(() => this.insertFiles(folderId, files));
-    return { error: false };
+      this.insertFiles(tx, folderId, newFiles);
+      return { error: false };
+    });
   }
 
-  removeFiles(folderId: string, fileIds: string[]): Status {
+  async removeFiles(folderId: string, fileIds: string[]): Promise<Status> {
     if (fileIds.length === 0) return { error: false };
 
-    // One statement per file instead of `IN (...)`: SQLite caps the number of bound parameters
-    this.ctx.storage.transactionSync(() => {
-      for (const fileId of fileIds) {
-        this.sql.exec('DELETE FROM files WHERE folder_id = ? AND file_id = ?', folderId, fileId);
+    this.db.transaction((tx) => {
+      for (const ids of chunk(fileIds, FILE_WRITE_BATCH)) {
+        tx.delete(files)
+          .where(and(eq(files.folderId, folderId), inArray(files.fileId, ids)))
+          .run();
       }
     });
     return { error: false };
   }
 
-  listFiles(folderId: string): Status<FileItem[]> {
-    return { error: false, data: this.readFiles(folderId) };
+  async listFiles(folderId: string): Promise<Status<FileItem[]>> {
+    return { error: false, data: await this.readFiles(folderId) };
   }
 
-  getFolderContents(folderNumber: number): Status<FolderContents | null> {
+  async getFolderContents(folderNumber: number): Promise<Status<FolderContents | null>> {
     if (!Number.isInteger(folderNumber) || folderNumber < 1) return { error: false, data: null };
 
-    const [folder] = this.sql
-      .exec<Pick<FolderRow, 'id' | 'name'>>(
-        'SELECT id, name FROM folders ORDER BY position LIMIT 1 OFFSET ?',
-        folderNumber - 1,
-      )
-      .toArray();
+    const [folder] = await this.db
+      .select({ id: folders.id, name: folders.name })
+      .from(folders)
+      .orderBy(asc(folders.position))
+      .limit(1)
+      .offset(folderNumber - 1);
     if (!folder) return { error: false, data: null };
 
-    return { error: false, data: { folder: { id: folder.id, name: folder.name }, files: this.readFiles(folder.id) } };
+    return { error: false, data: { folder, files: await this.readFiles(folder.id) } };
   }
 
   // ---- Teardown ----
 
-  clearUserData(): Status {
-    this.ctx.storage.transactionSync(() => {
-      this.sql.exec('DELETE FROM files');
-      this.sql.exec('DELETE FROM folders');
+  async clearUserData(): Promise<Status> {
+    this.db.transaction((tx) => {
+      tx.delete(files).run();
+      tx.delete(folders).run();
     });
     return { error: false };
   }
 
   // ---- Helpers ----
 
-  private readFolders(): FolderRow[] {
-    return this.sql.exec<FolderRow>('SELECT id, name, position FROM folders ORDER BY position').toArray();
+  private readFolders(tx: VaultTx): FolderRow[] {
+    return tx.select().from(folders).orderBy(asc(folders.position)).all();
   }
 
-  private folderExists(folderId: string): boolean {
-    return this.sql.exec('SELECT 1 FROM folders WHERE id = ?', folderId).toArray().length > 0;
+  private folderExists(tx: VaultTx, folderId: string): boolean {
+    return tx.select({ id: folders.id }).from(folders).where(eq(folders.id, folderId)).get() !== undefined;
   }
 
-  private readFiles(folderId: string): FileItem[] {
-    return this.sql
-      .exec<FileRow>('SELECT file_id, name, type FROM files WHERE folder_id = ? ORDER BY position', folderId)
-      .toArray()
-      .map(toFileItem);
+  private async readFiles(folderId: string): Promise<FileItem[]> {
+    const rows = await this.db
+      .select({ fileId: files.fileId, name: files.name, type: files.type })
+      .from(files)
+      .where(eq(files.folderId, folderId))
+      .orderBy(asc(files.position));
+    return rows.map(toFileItem);
   }
 
-  /** Appends files to a folder, skipping ones it already has (also repeats within `files`) */
-  private insertFiles(folderId: string, files: FileItem[]): void {
-    let position = this.sql
-      .exec<{ last: number }>('SELECT COALESCE(MAX(position), -1) AS last FROM files WHERE folder_id = ?', folderId)
-      .one().last;
-    for (const file of files) {
-      this.sql.exec(
-        'INSERT OR IGNORE INTO files (folder_id, file_id, position, name, type) VALUES (?, ?, ?, ?, ?)',
-        folderId,
-        file.id,
-        ++position,
-        file.name,
-        file.type,
-      );
+  /** Appends files to a folder, skipping ones it already has (also repeats within `newFiles`) */
+  private insertFiles(tx: VaultTx, folderId: string, newFiles: FileItem[]): void {
+    const last = tx
+      .select({ last: max(files.position) })
+      .from(files)
+      .where(eq(files.folderId, folderId))
+      .get();
+    const start = (last?.last ?? -1) + 1;
+
+    // Skipped repeats leave gaps in `position`, which is fine: it only orders the files
+    const rows = newFiles.map((file, i) => ({
+      folderId,
+      fileId: file.id,
+      position: start + i,
+      name: file.name,
+      type: file.type,
+    }));
+    for (const batch of chunk(rows, FILE_WRITE_BATCH)) {
+      tx.insert(files).values(batch).onConflictDoNothing().run();
     }
   }
 }

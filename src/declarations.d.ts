@@ -9,6 +9,12 @@ declare namespace Cloudflare {
   interface Env extends Secrets {}
 }
 
+// Drizzle migrations (drizzle/): wrangler bundles .sql files as text (the `rules` in wrangler.jsonc)
+declare module '*.sql' {
+  const sql: string;
+  export default sql;
+}
+
 // ECMAScript Uint8Array toBase64 proposal, supported natively by workerd and Node 22+
 interface Uint8Array {
   toBase64(options?: { alphabet?: 'base64' | 'base64url'; omitPadding?: boolean }): string;

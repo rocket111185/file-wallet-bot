@@ -1,7 +1,11 @@
+import { runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
+import { drizzle } from 'drizzle-orm/durable-sqlite';
+import { migrate } from 'drizzle-orm/durable-sqlite/migrator';
 import { describe, expect, it } from 'vitest';
 
-import { CloudflareDODatabase } from 'src/db/db.cloudflare-do';
+import migrations from '../drizzle/user-vault/migrations';
+import { CloudflareDODatabase, type UserVault } from 'src/db/db.cloudflare-do';
 import { DB_ERROR_KEYS, type FileItem, type Status } from 'src/types';
 
 // Real UserVault objects (remote bindings are off in vitest.config.mts)
@@ -44,7 +48,10 @@ describe('CloudflareDODatabase: folders', () => {
 
     expect(await db.addFolder(user, 'work')).toMatchObject({ error: true, key: DB_ERROR_KEYS.FOLDER_ALREADY_EXISTS });
     expect(await db.addFolder(user, '   ')).toMatchObject({ error: true, key: DB_ERROR_KEYS.FOLDER_NAME_LENGTH });
-    expect(await db.addFolder(user, 'x'.repeat(33))).toMatchObject({ error: true, key: DB_ERROR_KEYS.FOLDER_NAME_LENGTH });
+    expect(await db.addFolder(user, 'x'.repeat(33))).toMatchObject({
+      error: true,
+      key: DB_ERROR_KEYS.FOLDER_NAME_LENGTH,
+    });
     expect(await folderNames(user)).toEqual(['Work']);
   });
 
@@ -53,8 +60,14 @@ describe('CloudflareDODatabase: folders', () => {
     const work = await addFolder(user, 'Work');
     await addFolder(user, 'Memes');
 
-    expect(await db.renameFolder(user, work, 'memes')).toMatchObject({ error: true, key: DB_ERROR_KEYS.FOLDER_ALREADY_EXISTS });
-    expect(await db.renameFolder(user, 'nope', 'Job')).toMatchObject({ error: true, key: DB_ERROR_KEYS.FOLDER_NOT_FOUND });
+    expect(await db.renameFolder(user, work, 'memes')).toMatchObject({
+      error: true,
+      key: DB_ERROR_KEYS.FOLDER_ALREADY_EXISTS,
+    });
+    expect(await db.renameFolder(user, 'nope', 'Job')).toMatchObject({
+      error: true,
+      key: DB_ERROR_KEYS.FOLDER_NOT_FOUND,
+    });
     expect(await db.renameFolder(user, work, 'WORK')).toEqual({ error: false }); // Same folder: changing case is fine
     expect(await folderNames(user)).toEqual(['WORK', 'Memes']);
   });
@@ -113,6 +126,29 @@ describe('CloudflareDODatabase: files', () => {
     expect(await fileIds(user, memes)).toEqual(['a']);
   });
 
+  it('appends after the last remaining file when ones in the middle were removed', async () => {
+    const user = newUser();
+    const work = await addFolder(user, 'Work');
+    await db.addFiles(user, work, [file('s0'), file('s1'), file('s2'), file('s3')]);
+    await db.removeFiles(user, work, ['s1', 's2']);
+
+    // Positions left: 0 and 3. The next one is max + 1 = 4, not count = 2 (which would sort before s3)
+    await db.addFiles(user, work, [file('new')]);
+    expect(await fileIds(user, work)).toEqual(['s0', 's3', 'new']);
+  });
+
+  it('appends a folder after the last remaining one when ones in the middle were removed', async () => {
+    const user = newUser();
+    const ids = [await addFolder(user, 'F0'), await addFolder(user, 'F1'), await addFolder(user, 'F2')];
+    await addFolder(user, 'F3');
+    await db.removeFolder(user, ids[1]);
+    await db.removeFolder(user, ids[2]);
+
+    await addFolder(user, 'New');
+    expect(await folderNames(user)).toEqual(['F0', 'F3', 'New']);
+    expect(ok(await db.getFolderContents(user, 3))?.folder.name).toBe('New');
+  });
+
   it('handles a full folder: 45 files', async () => {
     const user = newUser();
     const work = await addFolder(user, 'Work');
@@ -120,6 +156,34 @@ describe('CloudflareDODatabase: files', () => {
     await db.addFiles(user, work, files);
 
     expect(await fileIds(user, work)).toEqual(files.map((f) => f.id));
+  });
+
+  // Writes go in batches of 10 rows or IDs, to stay under the 100 bound parameters a statement may
+  // have. These cross batch boundaries; the 45-file ones also fail if a batch outgrows the limit.
+
+  it('skips a repeat that lands in a later insert batch than the original', async () => {
+    const user = newUser();
+    const work = await addFolder(user, 'Work');
+    const files = Array.from({ length: 25 }, (_, i) => file(`f${i}`));
+    await db.addFiles(user, work, [...files, file('f0'), file('f24'), file('new')]);
+
+    expect(await fileIds(user, work)).toEqual([...files.map((f) => f.id), 'new']);
+  });
+
+  it('removes more files than fit in one delete statement', async () => {
+    const user = newUser();
+    const work = await addFolder(user, 'Work');
+    const files = Array.from({ length: 45 }, (_, i) => file(`f${i}`));
+    await db.addFiles(user, work, files);
+
+    // 151 IDs (23 saved, 128 unknown) in 16 delete batches, saved ones among them
+    const unknown = Array.from({ length: 128 }, (_, i) => `unknown${i}`);
+    const removed = files.filter((_, i) => i % 2 === 0).map((f) => f.id);
+    expect(await db.removeFiles(user, work, [...unknown.slice(0, 90), ...removed, ...unknown.slice(90)])).toEqual({
+      error: false,
+    });
+
+    expect(await fileIds(user, work)).toEqual(files.filter((_, i) => i % 2 === 1).map((f) => f.id));
   });
 });
 
@@ -152,5 +216,56 @@ describe('CloudflareDODatabase: getFolderContents (inline mode)', () => {
     await db.removeFolder(user, first);
 
     expect(ok(await db.getFolderContents(user, 1))?.folder.name).toBe('Second');
+  });
+});
+
+describe('CloudflareDODatabase: concurrency', () => {
+  it('lets only one of two concurrent adds with the same name through', async () => {
+    const user = newUser();
+    const results = await Promise.all([db.addFolder(user, 'Work'), db.addFolder(user, 'work')]);
+
+    expect(results.filter((r) => !r.error)).toHaveLength(1);
+    expect(results.filter((r) => r.error)).toMatchObject([{ key: DB_ERROR_KEYS.FOLDER_ALREADY_EXISTS }]);
+    expect(await folderNames(user)).toHaveLength(1);
+  });
+
+  it('keeps every file of concurrent batches, each at its own position', async () => {
+    const user = newUser();
+    const work = await addFolder(user, 'Work');
+    await Promise.all([
+      db.addFiles(user, work, [file('a1'), file('a2')]),
+      db.addFiles(user, work, [file('b1'), file('b2')]),
+    ]);
+
+    expect((await fileIds(user, work)).sort()).toEqual(['a1', 'a2', 'b1', 'b2']);
+  });
+});
+
+describe('UserVault: migrations', () => {
+  const vault = (userId: number) => env.USER_VAULT.getByName(String(userId));
+  it('creates both tables and records every applied migration', async () => {
+    await runInDurableObject(vault(newUser()), (_instance: UserVault, state) => {
+      const tables = state.storage.sql
+        .exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('folders', 'files')")
+        .toArray();
+      expect(tables.map((t) => t.name).sort()).toEqual(['files', 'folders']);
+
+      const applied = state.storage.sql.exec<{ name: string }>('SELECT name FROM __drizzle_migrations').toArray();
+      expect(applied.map((m) => m.name)).toEqual(Object.keys(migrations.migrations).sort());
+    });
+  });
+
+  it('skips already applied migrations when a vault starts again, keeping its data', async () => {
+    const user = newUser();
+    const work = await addFolder(user, 'Work');
+    await db.addFiles(user, work, [file('a')]);
+
+    // What the constructor does on every start: with nothing pending it must not touch the tables
+    await runInDurableObject(vault(user), (_instance: UserVault, state) => {
+      expect(() => migrate(drizzle(state.storage), migrations)).not.toThrow();
+    });
+
+    expect(await folderNames(user)).toEqual(['Work']);
+    expect(await fileIds(user, work)).toEqual(['a']);
   });
 });
