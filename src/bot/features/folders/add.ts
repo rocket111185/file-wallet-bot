@@ -5,7 +5,7 @@ import { awaitingInput, endFlow, type FlowContext } from 'src/bot/flow';
 import { translateError } from 'src/bot/utils';
 import { MAX_FOLDER_NAME_LENGTH } from 'src/types';
 
-const handleCommand = async (ctx: BotContext): Promise<void> => {
+export const startAddFolder = async (ctx: BotContext): Promise<void> => {
   await endFlow(ctx);
   ctx.session.flow = { kind: 'add-folder' };
   await ctx.reply(ctx.t('add-folder-prompt', { max: MAX_FOLDER_NAME_LENGTH }));
@@ -27,8 +27,6 @@ const handleName = async (ctx: FlowContext<'add-folder'>, name: string): Promise
 
 /** `/add_folder`: asks for a name and creates the folder */
 export const addFolder = new Composer<BotContext>();
-
-addFolder.command('add_folder', handleCommand);
 
 const input = addFolder.filter(awaitingInput('add-folder'));
 input.on('message:text', (ctx) => handleName(ctx, ctx.msg.text.trim()));

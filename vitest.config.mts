@@ -11,6 +11,18 @@ export default defineConfig({
       src: path.resolve(__dirname, './src'),
     },
   },
+  test: {
+    deps: {
+      optimizer: {
+        ssr: {
+          // CommonJS-only package that require()s grammY: loaded as is, `Composer` comes out
+          // undefined in workerd. Pre-bundled with esbuild, like wrangler does for the real build.
+          enabled: true,
+          include: ['@grammyjs/commands'],
+        },
+      },
+    },
+  },
   plugins: [
     cloudflareTest({
       wrangler: { configPath: './wrangler.jsonc' },
@@ -19,6 +31,3 @@ export default defineConfig({
     }),
   ],
 });
-
-
-

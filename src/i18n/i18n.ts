@@ -1,4 +1,5 @@
 import { en } from 'src/i18n/locales/en';
+import { uk } from 'src/i18n/locales/uk';
 import { escapeHtml } from 'src/utils';
 
 /** Shape every locale must implement: same keys and parameters as English */
@@ -14,10 +15,14 @@ export type Translate = <K extends MessageKey>(key: K, ...params: ParamsArg<K>) 
 
 const locales: Record<string, Messages> = {
   en,
-  // uk, de, ... — add a `Messages` object in ./locales and register it here
+  uk,
+  // de, ... — add a `Messages` object in ./locales and register it here
 };
 
 export const DEFAULT_LOCALE = 'en';
+
+/** Every locale with a translation, the default one included */
+export const LOCALES = Object.keys(locales);
 
 /**
  * Maps a Telegram `language_code` (IETF tag such as "en", "pt-br") to a supported locale

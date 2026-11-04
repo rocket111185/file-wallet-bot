@@ -6,7 +6,7 @@ import { findFolder, folderPicker, loadFoldersToPick } from 'src/bot/folder-pick
 import { translateError } from 'src/bot/utils';
 import { MAX_FOLDER_NAME_LENGTH } from 'src/types';
 
-const handleCommand = async (ctx: BotContext): Promise<void> => {
+export const startRenameFolder = async (ctx: BotContext): Promise<void> => {
   const folders = await loadFoldersToPick(ctx, 'rename-folder-no-folders');
   if (!folders) return;
 
@@ -53,7 +53,6 @@ const handleNotText = async (ctx: FlowContext<'rename-folder'>): Promise<void> =
 /** `/rename_folder`: pick a folder, then send its new name */
 export const renameFolder = new Composer<BotContext>();
 
-renameFolder.command('rename_folder', handleCommand);
 renameFolder.callbackQuery(/^rnf:select:(.+)$/, (ctx) => handleSelectFolder(ctx, ctx.match[1]));
 renameFolder.callbackQuery('rnf:cancel', (ctx) => cancelFlow(ctx, 'rename-folder', 'action-cancelled'));
 

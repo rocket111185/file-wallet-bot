@@ -56,3 +56,13 @@ The Telegram bot intended to organize files in a simple way
    Telegram should answer `{"ok":true,"result":true,"description":"Webhook was set"}`.
    Check it with `curl "https://api.telegram.org/bot<BOT_TOKEN>/getWebhookInfo"`; `last_error_message` shows failed deliveries
    (e.g. `401 Unauthorized` means the secrets don't match).
+7. Publish the command menu (the "Menu" button in the chat). Put the production bot token in a `.env` file
+   (gitignored), then use `npm run deploy` from now on: it runs `wrangler deploy` and then sends the menu to Telegram
+   straight from your machine (`scripts/set-commands.mts`), so the Worker exposes no route for it:
+   ```sh
+   echo 'BOT_TOKEN=<BOT_TOKEN>' > .env
+   npm run deploy                # deploy + menu
+   npm run commands:set          # menu only
+   ```
+   Check it with `curl "https://api.telegram.org/bot<BOT_TOKEN>/getMyCommands"`. Telegram apps may take a while to
+   show a new menu (reopen the chat).

@@ -5,7 +5,7 @@ import { activeFlow, cancelFlow, endFlow } from 'src/bot/flow';
 import { findFolder, folderPicked, folderPicker, loadFoldersToPick } from 'src/bot/folder-picker';
 import { translateError } from 'src/bot/utils';
 
-const handleCommand = async (ctx: BotContext): Promise<void> => {
+export const startRemoveFolder = async (ctx: BotContext): Promise<void> => {
   const folders = await loadFoldersToPick(ctx, 'remove-folder-no-folders');
   if (!folders) return;
 
@@ -61,7 +61,6 @@ const handleConfirm = async (ctx: BotContext): Promise<void> => {
 /** `/remove_folder`: pick a folder, confirm, and it is deleted with its files */
 export const removeFolder = new Composer<BotContext>();
 
-removeFolder.command('remove_folder', handleCommand);
 removeFolder.callbackQuery(/^rmf:select:(.+)$/, (ctx) => handleSelectFolder(ctx, ctx.match[1]));
 removeFolder.callbackQuery('rmf:confirm', handleConfirm);
 removeFolder.callbackQuery('rmf:cancel', (ctx) => cancelFlow(ctx, 'remove-folder', 'remove-folder-cancelled'));

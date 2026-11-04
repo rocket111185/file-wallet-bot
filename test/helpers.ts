@@ -29,9 +29,13 @@ export const createMemoryKV = () => {
 /**
  * The real chat bot, with a fake Telegram API that records every call instead of sending it and an
  * in-memory session storage. Folders and files go to a real UserVault Durable Object (as in
- * production), or to an in-memory KV with `storage: 'kv'`; `data` is that KV's content.
+ * production), or to an in-memory KV with `storage: 'kv'`; `data` is that KV's content. The user's
+ * Telegram language is `languageCode`.
  */
-export const createTestBot = ({ storage = 'do' }: { storage?: 'do' | 'kv' } = {}) => {
+export const createTestBot = ({
+  storage = 'do',
+  languageCode = 'en',
+}: { storage?: 'do' | 'kv'; languageCode?: string } = {}) => {
   const userId = ++nextUserId;
   const { kv, data } = createMemoryKV();
   const db = storage === 'do' ? new CloudflareDODatabase(env.USER_VAULT) : new CloudflareKVDatabase(kv);
@@ -58,7 +62,7 @@ export const createTestBot = ({ storage = 'do' }: { storage?: 'do' | 'kv' } = {}
   const lastMessageId = () => lastSentId;
 
   let updateId = 0;
-  const from = { id: userId, is_bot: false, first_name: 'User', language_code: 'en' };
+  const from = { id: userId, is_bot: false, first_name: 'User', language_code: languageCode };
   const chat = { id: userId, type: 'private' as const, first_name: 'User' };
 
   /** Sends a message from the user; `text` starting with "/" is a command */

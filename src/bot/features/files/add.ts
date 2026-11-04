@@ -50,7 +50,7 @@ export const extractFileItem = (ctx: BotContext): FileItem | null => {
   return null;
 };
 
-const handleCommand = async (ctx: BotContext): Promise<void> => {
+export const startAddFiles = async (ctx: BotContext): Promise<void> => {
   const folders = await loadFoldersToPick(ctx, 'add-files-no-folders');
   if (!folders) return;
 
@@ -149,7 +149,6 @@ const handleCancel = async (ctx: BotContext): Promise<void> => {
 /** `/add_files`: pick a folder, send files one by one, then save them */
 export const addFiles = new Composer<BotContext>();
 
-addFiles.command('add_files', handleCommand);
 addFiles.callbackQuery(/^af:select:(.+)$/, (ctx) => handleSelectFolder(ctx, ctx.match[1]));
 addFiles.callbackQuery('af:save', handleSave);
 addFiles.callbackQuery('af:cancel', handleCancel);

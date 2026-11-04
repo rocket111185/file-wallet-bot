@@ -163,16 +163,19 @@ export const initialSession = (): UserSession => ({ flow: null });
 
 ### 2.5 Bot Features
 
-The chat bot's handlers are grouped by feature in `src/bot/features/`. Each feature is a grammY `Composer` holding its own commands, buttons and message handlers, and `createChatBot` only plugs them in:
+The chat bot's handlers are grouped by feature in `src/bot/features/`. Each feature is a grammY `Composer` holding its own buttons and message handlers, and exports the function its command starts with (e.g. `startAddFolder`). `createChatBot` only plugs them in:
 
 ```
+src/bot/commands.ts  the command menu (registers each command's handler), /start, /cancel
 src/bot/features/
-  common.ts          /start, /cancel
-  folders/           add.ts (/add_folder), rename.ts (/rename_folder), remove.ts (/remove_folder)
+  folders/           add.ts (/add_folder), rename.ts (/rename_folder), remove.ts (/remove_folder),
+                     copy.ts (/copy_folder)
   files/             add.ts (/add_files), remove.ts (/remove_files)
   clear-data.ts      /clear_data
   inline.ts          inline queries (Worker bot)
 ```
+
+**Command menu.** `src/bot/commands.ts` lists the menu commands once, in order, each with a description key (`command-*` in the locales). The list is a `CommandGroup` (`@grammyjs/commands`) that handles the commands, renders the `/start` list (section 3.2), and becomes Telegram's command menu, translated for every locale in `src/i18n`. Telegram only shows the menu after `setMyCommands`, which `scripts/set-commands.mts` sends from the developer's machine right after `wrangler deploy` (`npm run deploy`, or `npm run commands:set` alone). The Worker never calls it and exposes no route for it.
 
 Shared helpers:
 * `src/bot/flow.ts`: `endFlow`; `awaitingInput(kind)`, the filter for messages that are input to a flow; `activeFlow` and `cancelFlow` for buttons (section 3.5). Both take an optional check (`FlowCheck`, a type guard) that the flow must pass besides its kind, e.g. that a folder is picked or that the button is on the flow's own menu.
@@ -218,7 +221,7 @@ Shared helpers:
 * Replies with a welcoming greeting explaining the bot's features:
   * How to organize files into folders (`/add_folder`, `/add_files`, `/remove_files`).
   * How to share files in any chat using inline queries: `@botname` lists folders, `@botname {number}` opens one.
-  * List of available commands.
+  * List of available commands: the menu commands with their descriptions, generated from `src/bot/commands.ts` (section 2.5), so it always matches the command menu. `/start` itself is not listed.
 
 ---
 

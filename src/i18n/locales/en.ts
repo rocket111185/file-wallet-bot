@@ -27,18 +27,23 @@ export const en = {
   'session-expired': 'This action has expired. Please start again.',
   'button-cancel': '❌ Cancel',
 
+  // --- Command menu (plain text, at most 256 characters; also listed by /start) ---
+  'command-add-folder': 'Create a new folder',
+  'command-add-files': 'Add files to an existing folder',
+  'command-remove-files': 'Remove files from a folder',
+  'command-rename-folder': 'Rename a folder',
+  'command-copy-folder': 'Copy a folder with all its files',
+  'command-remove-folder': 'Delete a folder and its files',
+  'command-clear-data': 'Delete all your data',
+  'command-cancel': 'Cancel current action',
+
   // --- /start ---
-  'start-welcome': (p: { botUsername: string }) =>
+  /** `commands`: one "/name - description" line per command, see src/bot/commands.ts */
+  'start-welcome': (p: { botUsername: string; commands: string }) =>
     '👋 <b>Welcome to File Wallet Bot!</b>\n\n' +
     'Organize your documents, photos, audio, and stickers into folders, and share them in any chat via inline mode!\n\n' +
     '<b>Available commands:</b>\n' +
-    '/add_folder - Create a new folder\n' +
-    '/add_files - Add files to an existing folder\n' +
-    '/remove_files - Remove files from a folder\n' +
-    '/rename_folder - Rename a folder\n' +
-    '/remove_folder - Delete a folder and its files\n' +
-    '/clear_data - Delete all your data\n' +
-    '/cancel - Cancel current action\n\n' +
+    `${p.commands}\n\n` +
     `In any chat, type <code>@${p.botUsername}</code> to see your folders, then add a folder's number ` +
     `(e.g. <code>@${p.botUsername} 1</code>) to open it. Tap a file to send it instantly!`,
 

@@ -28,4 +28,19 @@ describe('i18n', () => {
     expect(resolveLocale('en-GB')).toBe('en');
     expect(resolveLocale('xx')).toBe('en');
   });
+
+  it('resolves Ukrainian, with or without a region', () => {
+    expect(resolveLocale('uk')).toBe('uk');
+    expect(resolveLocale('uk-UA')).toBe('uk');
+  });
+
+  it('picks Ukrainian plural forms (one / few / many)', () => {
+    const uk = createTranslator('uk').text;
+    expect(uk('add-files-saved', { count: 1, name: 'X' })).toBe('✅ Збережено 1 файл в <b>X</b>.');
+    expect(uk('add-files-saved', { count: 3, name: 'X' })).toBe('✅ Збережено 3 файли в <b>X</b>.');
+    expect(uk('add-files-saved', { count: 5, name: 'X' })).toBe('✅ Збережено 5 файлів в <b>X</b>.');
+    expect(uk('add-files-saved', { count: 11, name: 'X' })).toBe('✅ Збережено 11 файлів в <b>X</b>.');
+    expect(uk('add-files-saved', { count: 21, name: 'X' })).toBe('✅ Збережено 21 файл в <b>X</b>.');
+    expect(uk('add-files-saved', { count: 24, name: 'X' })).toBe('✅ Збережено 24 файли в <b>X</b>.');
+  });
 });

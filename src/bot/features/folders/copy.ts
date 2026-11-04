@@ -6,7 +6,7 @@ import { findFolder, folderPicker, loadFoldersToPick } from 'src/bot/folder-pick
 import { translateError } from 'src/bot/utils';
 import { MAX_FOLDER_NAME_LENGTH } from 'src/types';
 
-const handleCommand = async (ctx: BotContext): Promise<void> => {
+export const startCopyFolder = async (ctx: BotContext): Promise<void> => {
   const folders = await loadFoldersToPick(ctx, 'copy-folder-no-folders');
   if (!folders) return;
 
@@ -57,9 +57,7 @@ const handleName = async (ctx: FlowContext<'copy-folder'>, name: string): Promis
   }
 
   await endFlow(ctx);
-  await ctx.reply(
-    ctx.t('copy-folder-success', { name: folder.name, newName: name, count: filesRes.data.length }),
-  );
+  await ctx.reply(ctx.t('copy-folder-success', { name: folder.name, newName: name, count: filesRes.data.length }));
 };
 
 const handleNotText = async (ctx: FlowContext<'copy-folder'>): Promise<void> => {
@@ -69,12 +67,10 @@ const handleNotText = async (ctx: FlowContext<'copy-folder'>): Promise<void> => 
 };
 
 /**
- * `/copy_folder`: pick a folder, then send a name; a new folder with that name gets all its files.
- * Not listed in /start: it's a helper for filling folders when testing.
+ * `/copy_folder`: pick a folder, then send a name; a new folder with that name gets all its files
  */
 export const copyFolder = new Composer<BotContext>();
 
-copyFolder.command('copy_folder', handleCommand);
 copyFolder.callbackQuery(/^cpf:select:(.+)$/, (ctx) => handleSelectFolder(ctx, ctx.match[1]));
 copyFolder.callbackQuery('cpf:cancel', (ctx) => cancelFlow(ctx, 'copy-folder', 'action-cancelled'));
 

@@ -2,8 +2,8 @@ import { session, type Bot } from 'grammy';
 
 import { createBaseBot, type BaseBotOptions } from 'src/bot/base';
 import type { BotContext } from 'src/bot/context';
+import { commands } from 'src/bot/commands';
 import { clearData } from 'src/bot/features/clear-data';
-import { common } from 'src/bot/features/common';
 import { files } from 'src/bot/features/files';
 import { folders } from 'src/bot/features/folders';
 import { initialSession, type SessionStorage } from 'src/session/session';
@@ -31,7 +31,7 @@ export const createChatBot = (options: ChatBotOptions): Bot<BotContext> => {
     }),
   );
 
-  bot.use(common, folders, files, clearData);
+  bot.use(commands, folders, files, clearData);
 
   return bot;
 };

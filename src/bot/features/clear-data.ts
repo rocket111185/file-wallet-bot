@@ -5,7 +5,7 @@ import { activeFlow, cancelFlow, endFlow } from 'src/bot/flow';
 import { translateError } from 'src/bot/utils';
 import { initialSession } from 'src/session/session';
 
-const handleCommand = async (ctx: BotContext): Promise<void> => {
+export const startClearData = async (ctx: BotContext): Promise<void> => {
   await endFlow(ctx);
 
   const keyboard = new InlineKeyboard()
@@ -36,6 +36,5 @@ const handleConfirm = async (ctx: BotContext): Promise<void> => {
 /** `/clear_data`: deletes all of the user's folders and files after confirmation */
 export const clearData = new Composer<BotContext>();
 
-clearData.command('clear_data', handleCommand);
 clearData.callbackQuery('cd:confirm', handleConfirm);
 clearData.callbackQuery('cd:cancel', (ctx) => cancelFlow(ctx, 'clear-data', 'clear-data-cancelled'));

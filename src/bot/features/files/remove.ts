@@ -68,7 +68,7 @@ const showPage = (ctx: BotContext, flow: FileListFlow) =>
 
 // ---- Handlers ----
 
-const handleCommand = async (ctx: BotContext): Promise<void> => {
+export const startRemoveFiles = async (ctx: BotContext): Promise<void> => {
   const folders = await loadFoldersToPick(ctx, 'remove-files-no-folders');
   if (!folders) return;
 
@@ -165,7 +165,6 @@ const handleDelete = async (ctx: BotContext): Promise<void> => {
 /** `/remove_files`: pick a folder, select files page by page, then delete them */
 export const removeFiles = new Composer<BotContext>();
 
-removeFiles.command('remove_files', handleCommand);
 removeFiles.callbackQuery(/^rf:select:(.+)$/, (ctx) => handleSelectFolder(ctx, ctx.match[1]));
 removeFiles.callbackQuery(/^rf:t:(\d+)$/, (ctx) => handleToggle(ctx, Number(ctx.match[1])));
 removeFiles.callbackQuery(/^rf:p:(\d+)$/, (ctx) => handlePage(ctx, Number(ctx.match[1])));
