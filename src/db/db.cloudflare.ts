@@ -1,15 +1,21 @@
 import type { Database } from 'src/db/db.interface';
-import { validateFolderName } from 'src/db/validation';
+import { checkFileLimit, checkFolderLimit, validateFolderName } from 'src/db/validation';
 import { logger } from 'src/logger';
 import {
   DB_ERROR_KEYS,
+  DEFAULT_PLAN,
+  PLAN_FOLDER_LIMITS,
   type DbErrorKey,
   type FileItem,
   type FolderContents,
   type FolderInfo,
+  type FolderQuota,
   type Status,
 } from 'src/types';
 import { generateId, sameName } from 'src/utils';
+
+/** No plan storage here: every user gets the default plan's limits */
+const FOLDER_LIMIT = PLAN_FOLDER_LIMITS[DEFAULT_PLAN];
 
 export class CloudflareKVDatabase implements Database {
   constructor(private readonly kv: KVNamespace) {}
@@ -58,6 +64,9 @@ export class CloudflareKVDatabase implements Database {
       if (folders.some((folder) => sameName(folder.name, trimmedName))) {
         return { error: true, key: DB_ERROR_KEYS.FOLDER_ALREADY_EXISTS, params: { name: trimmedName } };
       }
+
+      const overLimit = checkFolderLimit(folders.length, FOLDER_LIMIT);
+      if (overLimit) return overLimit;
 
       // Folder IDs are 12-char base64url strings from 9 random bytes (72 bits of entropy)
       const id = generateId(9);
@@ -127,6 +136,10 @@ export class CloudflareKVDatabase implements Database {
         return true;
       });
 
+      const overLimit = checkFileLimit(currentFiles.length, newFiles.length);
+      if (overLimit) return overLimit;
+      if (newFiles.length === 0) return { error: false };
+
       await this.kv.put(this.getFilesKey(userId, folderId), JSON.stringify([...currentFiles, ...newFiles]));
 
       return { error: false };
@@ -168,6 +181,13 @@ export class CloudflareKVDatabase implements Database {
       if (!folder) return { error: false, data: null };
       return { error: false, data: { folder, files: await this.readFiles(userId, folder.id) } };
     });
+  }
+
+  async getFolderQuota(userId: string | number): Promise<Status<FolderQuota>> {
+    return this.run('getFolderQuota', DB_ERROR_KEYS.DB_GET_QUOTA, { userId }, async () => ({
+      error: false,
+      data: { used: (await this.readFolders(userId)).length, max: FOLDER_LIMIT },
+    }));
   }
 
   async clearUserData(userId: string | number): Promise<Status> {

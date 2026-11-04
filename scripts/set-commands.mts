@@ -36,7 +36,7 @@ if (!token) {
 try {
   await menuCommands.setCommands({ api: new Api(token) });
 } catch (err) {
-  const errorMessage = err instanceof Error ? err.message : err
+  const errorMessage = err instanceof Error ? err.message : err;
   console.error('Telegram rejected the command menu:', errorMessage);
   process.exit(1);
 }

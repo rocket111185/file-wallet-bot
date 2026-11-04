@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { CloudflareKVDatabase } from 'src/db/db.cloudflare';
-import { DB_ERROR_KEYS, type FileItem } from 'src/types';
+import { DB_ERROR_KEYS, MAX_FILES_PER_FOLDER, type FileItem } from 'src/types';
 import { generateId } from 'src/utils';
 
 const createMockKV = () => {
@@ -266,12 +266,8 @@ describe('CloudflareKVDatabase', () => {
     const f2 = await db.addFolder(userId, 'Personal');
 
     if (!f1.error && !f2.error) {
-      await db.addFiles(userId, f1.data.id, [
-        { id: 'w1', name: 'w1.doc', type: 'document' },
-      ]);
-      await db.addFiles(userId, f2.data.id, [
-        { id: 'p1', name: 'p1.png', type: 'photo' },
-      ]);
+      await db.addFiles(userId, f1.data.id, [{ id: 'w1', name: 'w1.doc', type: 'document' }]);
+      await db.addFiles(userId, f2.data.id, [{ id: 'p1', name: 'p1.png', type: 'photo' }]);
 
       const clearRes = await db.clearUserData(userId);
       expect(clearRes.error).toBe(false);
@@ -286,5 +282,41 @@ describe('CloudflareKVDatabase', () => {
         expect(files1.data).toHaveLength(0);
       }
     }
+  });
+});
+
+describe('CloudflareKVDatabase: limits', () => {
+  const userId = 42;
+  const photos = (prefix: string, n: number): FileItem[] =>
+    Array.from({ length: n }, (_, i) => ({ id: `${prefix}${i}`, name: '', type: 'photo' }));
+
+  it('allows 10 folders', async () => {
+    const db = new CloudflareKVDatabase(createMockKV());
+    for (let i = 0; i < 10; i++) expect((await db.addFolder(userId, `F${i}`)).error).toBe(false);
+
+    expect(await db.addFolder(userId, 'One more')).toEqual({
+      error: true,
+      key: DB_ERROR_KEYS.FOLDER_LIMIT_REACHED,
+      params: { max: 10 },
+    });
+    expect(await db.getFolderQuota(userId)).toEqual({ error: false, data: { used: 10, max: 10 } });
+  });
+
+  it(`allows ${MAX_FILES_PER_FOLDER} files per folder, not counting repeats`, async () => {
+    const db = new CloudflareKVDatabase(createMockKV());
+    const add = await db.addFolder(userId, 'Work');
+    if (add.error) throw new Error(add.key);
+    const folderId = add.data.id;
+
+    await db.addFiles(userId, folderId, photos('a', MAX_FILES_PER_FOLDER - 2));
+    expect(await db.addFiles(userId, folderId, photos('b', 3))).toEqual({
+      error: true,
+      key: DB_ERROR_KEYS.FILE_LIMIT_REACHED,
+      params: { max: MAX_FILES_PER_FOLDER, remaining: 2 },
+    });
+    expect(await db.addFiles(userId, folderId, [...photos('a', 5), ...photos('b', 2)])).toEqual({ error: false });
+
+    const list = await db.listFiles(userId, folderId);
+    expect(!list.error && list.data).toHaveLength(MAX_FILES_PER_FOLDER);
   });
 });

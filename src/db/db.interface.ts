@@ -1,4 +1,4 @@
-import type { FileItem, FolderContents, FolderInfo, Status } from 'src/types';
+import type { FileItem, FolderContents, FolderInfo, FolderQuota, Status } from 'src/types';
 
 export interface Database {
   // Folder operations
@@ -17,6 +17,9 @@ export interface Database {
    * mode needs to open a folder by number, in one call. `null` when there is no such folder.
    */
   getFolderContents(userId: string | number, folderNumber: number): Promise<Status<FolderContents | null>>;
+
+  /** Folders the user has and how many their plan allows */
+  getFolderQuota(userId: string | number): Promise<Status<FolderQuota>>;
 
   // User teardown
   clearUserData(userId: string | number): Promise<Status>;

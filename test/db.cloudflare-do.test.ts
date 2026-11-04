@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import migrations from '../drizzle/user-vault/migrations';
 import { CloudflareDODatabase, type UserVault } from 'src/db/db.cloudflare-do';
-import { DB_ERROR_KEYS, type FileItem, type Status } from 'src/types';
+import { DB_ERROR_KEYS, MAX_FILES_PER_FOLDER, type FileItem, type Status } from 'src/types';
 
 // Real UserVault objects (remote bindings are off in vitest.config.mts)
 const db = new CloudflareDODatabase(env.USER_VAULT);
@@ -241,14 +241,96 @@ describe('CloudflareDODatabase: concurrency', () => {
   });
 });
 
+const vault = (userId: number) => env.USER_VAULT.getByName(String(userId));
+const files = (prefix: string, n: number) => Array.from({ length: n }, (_, i) => file(`${prefix}${i}`));
+
+describe('CloudflareDODatabase: limits', () => {
+  const addFolders = async (user: number, n: number) => {
+    for (let i = 0; i < n; i++) await addFolder(user, `Folder ${i}`);
+  };
+
+  it('allows 10 folders on the free plan', async () => {
+    const user = newUser();
+    expect(await db.getFolderQuota(user)).toEqual({ error: false, data: { used: 0, max: 10 } });
+
+    await addFolders(user, 10);
+    expect(await db.addFolder(user, 'One more')).toEqual({
+      error: true,
+      key: DB_ERROR_KEYS.FOLDER_LIMIT_REACHED,
+      params: { max: 10 },
+    });
+    expect(await folderNames(user)).toHaveLength(10);
+    expect(await db.getFolderQuota(user)).toEqual({ error: false, data: { used: 10, max: 10 } });
+  });
+
+  it('frees a place when a folder is removed', async () => {
+    const user = newUser();
+    await addFolders(user, 10);
+    const [first] = ok(await db.listFolders(user));
+    await db.removeFolder(user, first.id);
+    expect((await db.addFolder(user, 'One more')).error).toBe(false);
+  });
+
+  it('allows more folders on a paid plan, and keeps the plan when data is cleared', async () => {
+    const user = newUser();
+    await vault(user).setPlan('plus');
+    await addFolders(user, 20);
+    expect(await db.addFolder(user, 'One more')).toMatchObject({ params: { max: 20 } });
+
+    await db.clearUserData(user);
+    expect(await db.getFolderQuota(user)).toEqual({ error: false, data: { used: 0, max: 20 } });
+
+    await vault(user).setPlan('pro');
+    expect(await db.getFolderQuota(user)).toEqual({ error: false, data: { used: 0, max: 50 } });
+  });
+
+  it(`allows ${MAX_FILES_PER_FOLDER} files per folder`, async () => {
+    const user = newUser();
+    const work = await addFolder(user, 'Work');
+    expect(await db.addFiles(user, work, files('a', MAX_FILES_PER_FOLDER - 1))).toEqual({ error: false });
+    expect(await db.addFiles(user, work, [file('last')])).toEqual({ error: false });
+
+    expect(await db.addFiles(user, work, [file('extra')])).toEqual({
+      error: true,
+      key: DB_ERROR_KEYS.FILE_LIMIT_REACHED,
+      params: { max: MAX_FILES_PER_FOLDER, remaining: 0 },
+    });
+    expect(await fileIds(user, work)).toHaveLength(MAX_FILES_PER_FOLDER);
+  });
+
+  it('saves nothing from a batch that would go over the limit', async () => {
+    const user = newUser();
+    const work = await addFolder(user, 'Work');
+    await db.addFiles(user, work, files('a', MAX_FILES_PER_FOLDER - 3));
+
+    expect(await db.addFiles(user, work, files('b', 4))).toMatchObject({ params: { remaining: 3 } });
+    expect(await fileIds(user, work)).toHaveLength(MAX_FILES_PER_FOLDER - 3);
+  });
+
+  it('does not count repeats against the limit', async () => {
+    const user = newUser();
+    const work = await addFolder(user, 'Work');
+    await db.addFiles(user, work, files('a', MAX_FILES_PER_FOLDER - 1));
+
+    // One new file, plus repeats of saved ones and of itself
+    const batch = [file('a0'), file('new'), file('a1'), file('new')];
+    expect(await db.addFiles(user, work, batch)).toEqual({ error: false });
+    expect(await fileIds(user, work)).toHaveLength(MAX_FILES_PER_FOLDER);
+
+    // A full folder still accepts repeats, as a no-op
+    expect(await db.addFiles(user, work, [file('new')])).toEqual({ error: false });
+  });
+});
+
 describe('UserVault: migrations', () => {
-  const vault = (userId: number) => env.USER_VAULT.getByName(String(userId));
-  it('creates both tables and records every applied migration', async () => {
+  it('creates every table and records every applied migration', async () => {
     await runInDurableObject(vault(newUser()), (_instance: UserVault, state) => {
       const tables = state.storage.sql
-        .exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('folders', 'files')")
+        .exec<{ name: string }>(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('folders', 'files', 'account')",
+        )
         .toArray();
-      expect(tables.map((t) => t.name).sort()).toEqual(['files', 'folders']);
+      expect(tables.map((t) => t.name).sort()).toEqual(['account', 'files', 'folders']);
 
       const applied = state.storage.sql.exec<{ name: string }>('SELECT name FROM __drizzle_migrations').toArray();
       expect(applied.map((m) => m.name)).toEqual(Object.keys(migrations.migrations).sort());

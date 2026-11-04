@@ -2,11 +2,13 @@ import { Composer } from 'grammy';
 
 import type { BotContext } from 'src/bot/context';
 import { awaitingInput, endFlow, type FlowContext } from 'src/bot/flow';
-import { translateError } from 'src/bot/utils';
-import { MAX_FOLDER_NAME_LENGTH } from 'src/types';
+import { hasFolderRoom, translateError } from 'src/bot/utils';
+import { DB_ERROR_KEYS, MAX_FOLDER_NAME_LENGTH } from 'src/types';
 
 export const startAddFolder = async (ctx: BotContext): Promise<void> => {
   await endFlow(ctx);
+  if (!(await hasFolderRoom(ctx))) return;
+
   ctx.session.flow = { kind: 'add-folder' };
   await ctx.reply(ctx.t('add-folder-prompt', { max: MAX_FOLDER_NAME_LENGTH }));
 };
@@ -17,6 +19,8 @@ const handleName = async (ctx: FlowContext<'add-folder'>, name: string): Promise
 
   const res = await ctx.db.addFolder(userId, name);
   if (res.error) {
+    // Another name won't help once the limit is reached
+    if (res.key === DB_ERROR_KEYS.FOLDER_LIMIT_REACHED) await endFlow(ctx);
     await ctx.reply(translateError(ctx.t, res));
     return;
   }

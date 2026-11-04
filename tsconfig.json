@@ -41,9 +41,9 @@
     /* Path resolution configuration */
     "baseUrl": ".",
     "paths": {
-      "src/*": ["./src/*"],
-    },
+      "src/*": ["./src/*"]
+    }
   },
   "exclude": ["test"],
-  "include": ["worker-configuration.d.ts", "src/**/*.ts", "src/**/*.d.ts", "scripts/**/*.mts"],
+  "include": ["worker-configuration.d.ts", "src/**/*.ts", "src/**/*.d.ts", "scripts/**/*.mts"]
 }

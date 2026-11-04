@@ -3,12 +3,13 @@ import { Composer } from 'grammy';
 import type { BotContext } from 'src/bot/context';
 import { activeFlow, awaitingInput, cancelFlow, endFlow, type FlowContext } from 'src/bot/flow';
 import { findFolder, folderPicker, loadFoldersToPick } from 'src/bot/folder-picker';
-import { translateError } from 'src/bot/utils';
-import { MAX_FOLDER_NAME_LENGTH } from 'src/types';
+import { hasFolderRoom, translateError } from 'src/bot/utils';
+import { DB_ERROR_KEYS, MAX_FOLDER_NAME_LENGTH } from 'src/types';
 
 export const startCopyFolder = async (ctx: BotContext): Promise<void> => {
   const folders = await loadFoldersToPick(ctx, 'copy-folder-no-folders');
   if (!folders) return;
+  if (!(await hasFolderRoom(ctx))) return;
 
   ctx.session.flow = { kind: 'copy-folder', folder: null };
   await ctx.reply(ctx.t('copy-folder-choose-folder'), { reply_markup: folderPicker(ctx, folders, 'cpf') });
@@ -44,6 +45,8 @@ const handleName = async (ctx: FlowContext<'copy-folder'>, name: string): Promis
   // A taken or invalid name keeps the flow going, so the user can just send another one
   const addRes = await ctx.db.addFolder(userId, name);
   if (addRes.error) {
+    // Another name won't help once the limit is reached
+    if (addRes.key === DB_ERROR_KEYS.FOLDER_LIMIT_REACHED) await endFlow(ctx);
     await ctx.reply(translateError(ctx.t, addRes));
     return;
   }

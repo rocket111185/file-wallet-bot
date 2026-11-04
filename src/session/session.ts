@@ -14,6 +14,7 @@ export type Flow =
       kind: 'add-files';
       folder: FolderInfo | null; // null until a folder is picked
       files: FileItem[]; // Received files waiting to be saved
+      existingCount?: number; // Files the folder had when picked; missing in sessions from older versions
       statusMessageId?: number; // The "N files ready / Save" message, replaced on every new file
       rejectedGroupId?: string; // Last album warned about, so each album gets one warning
     }

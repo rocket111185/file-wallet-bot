@@ -13,6 +13,13 @@ export const en = {
   'error-folder-already-exists': (p: { name: string }) =>
     `⚠️ A folder named '${p.name}' already exists. Please choose a different name.`,
   'error-folder-not-found': '⚠️ Folder not found.',
+  'error-folder-limit': (p: { max: number }) =>
+    `⚠️ You've reached the limit of ${p.max} folders. Delete a folder with /remove_folder to create a new one.`,
+  'error-file-limit': (p: { max: number; remaining: number }) =>
+    p.remaining === 0
+      ? `⚠️ This folder is full: a folder can hold up to ${p.max} files.`
+      : `⚠️ A folder can hold up to ${p.max} files, so only ${plural('en', p.remaining, { one: '1 more file fits', other: `${p.remaining} more files fit` })} in this one.`,
+  'error-db-get-quota': '❌ Failed to check your folder limit. Please try again later.',
   'error-db-add-folder': '❌ Failed to create the folder. Please try again later.',
   'error-db-rename-folder': '❌ Failed to rename the folder. Please try again later.',
   'error-db-remove-folder': '❌ Failed to remove the folder. Please try again later.',
@@ -68,6 +75,11 @@ export const en = {
   'add-files-album-unsupported': "⚠️ Albums aren't supported yet. Please send files one by one.",
   'add-files-nothing-to-save': '⚠️ No files to save.',
   'add-files-button-save': (p: { count: number }) => `💾 Save (${p.count})`,
+  /** Plain text (a popup) */
+  'add-files-folder-full': (p: { max: number }) =>
+    `This folder is full: it already has ${p.max} files. Choose another folder or remove some files first.`,
+  'add-files-limit-reached': (p: { max: number }) =>
+    `⚠️ The folder can't take more files (at most ${p.max}). Press <b>Save</b> to keep the ones you've sent.`,
 
   // --- /rename_folder ---
   'rename-folder-no-folders': "⚠️ You don't have any folders to rename.",

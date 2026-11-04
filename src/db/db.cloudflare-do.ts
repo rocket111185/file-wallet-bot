@@ -1,20 +1,25 @@
 import { DurableObject } from 'cloudflare:workers';
-import { and, asc, eq, inArray, max } from 'drizzle-orm';
+import { and, asc, count, eq, inArray, max } from 'drizzle-orm';
 import { drizzle, type DrizzleSqliteDODatabase } from 'drizzle-orm/durable-sqlite';
 import { migrate } from 'drizzle-orm/durable-sqlite/migrator';
 
 import migrations from '../../drizzle/user-vault/migrations';
 import type { Database } from 'src/db/db.interface';
-import { files, folders, type FileRow, type FolderRow } from 'src/db/schemas/user-vault';
-import { validateFolderName } from 'src/db/validation';
+import { account, files, folders, type FileRow, type FolderRow } from 'src/db/schemas/user-vault';
+import { checkFileLimit, checkFolderLimit, validateFolderName } from 'src/db/validation';
 import { logger } from 'src/logger';
 import {
   DB_ERROR_KEYS,
+  DEFAULT_PLAN,
+  PLAN_FOLDER_LIMITS,
   type DbErrorKey,
   type FileItem,
   type FolderContents,
   type FolderInfo,
+  type FolderQuota,
+  type Plan,
   type Status,
+  type StatusError,
   type TelegramFileType,
 } from 'src/types';
 import { chunk, generateId, sameName } from 'src/utils';
@@ -79,6 +84,9 @@ export class UserVault extends DurableObject<Env> {
         return { error: true, key: DB_ERROR_KEYS.FOLDER_ALREADY_EXISTS, params: { name: trimmedName } };
       }
 
+      const overLimit = checkFolderLimit(existing.length, this.folderLimit(tx));
+      if (overLimit) return overLimit;
+
       // Folder IDs are 12-char base64url strings from 9 random bytes (72 bits of entropy)
       const id = generateId(9);
       const position = (existing.at(-1)?.position ?? -1) + 1; // Rows come sorted by position
@@ -138,8 +146,7 @@ export class UserVault extends DurableObject<Env> {
         return { error: true, key: DB_ERROR_KEYS.FOLDER_NOT_FOUND };
       }
 
-      this.insertFiles(tx, folderId, newFiles);
-      return { error: false };
+      return this.insertFiles(tx, folderId, newFiles) ?? { error: false };
     });
   }
 
@@ -174,8 +181,25 @@ export class UserVault extends DurableObject<Env> {
     return { error: false, data: { folder, files: await this.readFiles(folder.id) } };
   }
 
+  // ---- Plan ----
+
+  async getFolderQuota(): Promise<Status<FolderQuota>> {
+    return this.db.transaction((tx): Status<FolderQuota> => {
+      const row = tx.select({ used: count() }).from(folders).get();
+      return { error: false, data: { used: row?.used ?? 0, max: this.folderLimit(tx) } };
+    });
+  }
+
+  /**
+   * Switches the user to `plan`. Not part of `Database` yet: the purchase flow will call it.
+   */
+  async setPlan(plan: Plan): Promise<void> {
+    await this.db.insert(account).values({ id: 1, plan }).onConflictDoUpdate({ target: account.id, set: { plan } });
+  }
+
   // ---- Teardown ----
 
+  /** Removes folders and files; the plan stays, since upgrades are paid for */
   async clearUserData(): Promise<Status> {
     this.db.transaction((tx) => {
       tx.delete(files).run();
@@ -188,6 +212,16 @@ export class UserVault extends DurableObject<Env> {
 
   private readFolders(tx: VaultTx): FolderRow[] {
     return tx.select().from(folders).orderBy(asc(folders.position)).all();
+  }
+
+  private readPlan(tx: VaultTx): Plan {
+    const row = tx.select({ plan: account.plan }).from(account).where(eq(account.id, 1)).get();
+    const plan = row?.plan as Plan | undefined;
+    return plan && plan in PLAN_FOLDER_LIMITS ? plan : DEFAULT_PLAN;
+  }
+
+  private folderLimit(tx: VaultTx): number {
+    return PLAN_FOLDER_LIMITS[this.readPlan(tx)];
   }
 
   private folderExists(tx: VaultTx, folderId: string): boolean {
@@ -203,8 +237,21 @@ export class UserVault extends DurableObject<Env> {
     return rows.map(toFileItem);
   }
 
-  /** Appends files to a folder, skipping ones it already has (also repeats within `newFiles`) */
-  private insertFiles(tx: VaultTx, folderId: string, newFiles: FileItem[]): void {
+  /**
+   * Appends files to a folder, skipping ones it already has (also repeats within `newFiles`).
+   * Inserts nothing if the new ones don't all fit (MAX_FILES_PER_FOLDER).
+   *
+   * @returns The limit error, or null when the files were added
+   */
+  private insertFiles(tx: VaultTx, folderId: string, newFiles: FileItem[]): StatusError | null {
+    const stored = tx.select({ fileId: files.fileId }).from(files).where(eq(files.folderId, folderId)).all();
+    const seen = new Set(stored.map((row) => row.fileId));
+    const fresh = newFiles.filter((file) => !seen.has(file.id) && seen.add(file.id));
+
+    const overLimit = checkFileLimit(stored.length, fresh.length);
+    if (overLimit) return overLimit;
+    if (fresh.length === 0) return null;
+
     const last = tx
       .select({ last: max(files.position) })
       .from(files)
@@ -212,8 +259,7 @@ export class UserVault extends DurableObject<Env> {
       .get();
     const start = (last?.last ?? -1) + 1;
 
-    // Skipped repeats leave gaps in `position`, which is fine: it only orders the files
-    const rows = newFiles.map((file, i) => ({
+    const rows = fresh.map((file, i) => ({
       folderId,
       fileId: file.id,
       position: start + i,
@@ -223,6 +269,7 @@ export class UserVault extends DurableObject<Env> {
     for (const batch of chunk(rows, FILE_WRITE_BATCH)) {
       tx.insert(files).values(batch).onConflictDoNothing().run();
     }
+    return null;
   }
 }
 
@@ -296,6 +343,12 @@ export class CloudflareDODatabase implements Database {
   getFolderContents(userId: UserId, folderNumber: number): Promise<Status<FolderContents | null>> {
     return this.call('getFolderContents', DB_ERROR_KEYS.DB_LIST_FILES, { userId, folderNumber }, () =>
       this.vault(userId).getFolderContents(folderNumber),
+    );
+  }
+
+  getFolderQuota(userId: UserId): Promise<Status<FolderQuota>> {
+    return this.call('getFolderQuota', DB_ERROR_KEYS.DB_GET_QUOTA, { userId }, () =>
+      this.vault(userId).getFolderQuota(),
     );
   }
 

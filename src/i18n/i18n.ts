@@ -48,9 +48,7 @@ const render = (locale: string, key: MessageKey, params: Record<string, unknown>
   }
 
   const prepared = html
-    ? Object.fromEntries(
-        Object.entries(params ?? {}).map(([k, v]) => [k, typeof v === 'string' ? escapeHtml(v) : v]),
-      )
+    ? Object.fromEntries(Object.entries(params ?? {}).map(([k, v]) => [k, typeof v === 'string' ? escapeHtml(v) : v]))
     : params;
   return (message as (p: unknown) => string)(prepared);
 };

@@ -81,6 +81,9 @@ export interface Database {
   // Folder at 1-based position `folderNumber` (listFolders order) with its files, for inline mode; null if none
   getFolderContents(userId: string | number, folderNumber: number): Promise<Status<FolderContents | null>>;
 
+  // Folders the user has (`used`) and how many their plan allows (`max`), see 2.3.D
+  getFolderQuota(userId: string | number): Promise<Status<FolderQuota>>;
+
   // User teardown
   clearUserData(userId: string | number): Promise<Status>;
 }
@@ -95,6 +98,7 @@ Data is partitioned cleanly between persistent bot data (handled by `Database`) 
 * **Schema** (Drizzle ORM, `src/db/schemas/user-vault.ts`):
   * `folders (id PK, name, position)`: inline folder number = rank by `position`.
   * `files (folder_id, file_id, position, name, type, PK (folder_id, file_id))`: the primary key also rejects the same file twice in one folder.
+  * `account (id PK, plan)`: at most one row (`id = 1`) holding the user's plan; no row means `free`. `clearUserData` leaves it alone. `setPlan(plan)` (an RPC method of `UserVault`, not part of `Database` yet) writes it.
 * **Migrations**: `npm run db:generate` (drizzle-kit) writes them to `drizzle/user-vault`; they're never edited by hand. Each vault applies pending ones in its constructor, synchronously and in one transaction, before it takes any call.
 * **Batched writes**: a SQLite-backed Durable Object accepts at most 100 bound parameters per statement, so `addFiles` inserts and `removeFiles` deletes in batches of 10 rows or IDs (`FILE_WRITE_BATCH`), all inside one transaction. The size is fixed with a margin rather than computed from the column count: 10 rows fit as long as `files` has at most 10 columns (5 today), and the multi-batch tests fail if a batch ever outgrows the limit.
 * **Atomicity**: methods are async, but every check-then-write (e.g. the duplicate-name check and the insert in `addFolder`) runs in one synchronous `db.transaction`, so it's atomic and no other call can interleave with it. The object belongs to one user, so its methods take no user ID.
@@ -113,6 +117,17 @@ Kept as an alternative `Database`; not wired into the bot:
 > Why not KV: KV is eventually consistent, allows 1 write per second per key, and only 1,000 writes per day on the Free plan, while every session change is a write. Telegram also delivers updates in parallel (an album is several updates at once), and grammY reads the session when an update starts and writes it back when it ends, so parallel updates would overwrite each other's changes. `UserChat` sees all of a user's updates and runs them one at a time through an in-memory queue. Durable Object input gates alone don't prevent this, since awaiting a Telegram API call lets the next update start.
 >
 > Media albums are still not supported (see section 3.4); with the queue in place they can be supported later.
+
+#### D. Limits
+| Limit | Value | Where |
+|---|---|---|
+| Files per folder | `MAX_FILES_PER_FOLDER = 50`, every plan | `addFiles` |
+| Folders per user | `PLAN_FOLDER_LIMITS`: `free` 10, `plus` 20, `pro` 50 | `addFolder` |
+
+* Paid plans are one-time purchases (no purchase flow yet). The plan is stored in `account` (2.3.A) and survives `/clear_data`. The KV implementation has no plan storage and always uses the `free` limits.
+* Both checks live in `src/db/validation.ts` (`checkFolderLimit`, `checkFileLimit`) and run inside the same transaction as the write, so they can't be raced.
+* Only files new to the folder count: repeats (of saved files or within the batch) are skipped as before. A batch that doesn't fit entirely is refused as a whole, with `FILE_LIMIT_REACHED { max, remaining }`.
+* Data from before the limits is kept: a user over a limit can't add more until they're back under it.
 
 ### 2.4 Session Management (grammY)
 
@@ -140,9 +155,11 @@ export type Flow =
       kind: 'add-files';
       folder: { id: string; name: string } | null; // null until a folder is picked
       files: FileItem[];                           // received, not yet saved
+      existingCount?: number;                      // files the folder had when picked
       statusMessageId?: number;                    // the "N files ready / Save" message
     }
   | { kind: 'rename-folder'; folder: { id: string; name: string } | null } // null until picked
+  | { kind: 'copy-folder'; folder: { id: string; name: string } | null }   // folder to copy; null until picked
   | { kind: 'remove-folder'; folder: { id: string; name: string } | null } // null until picked
   | {
       kind: 'remove-files';
@@ -227,6 +244,7 @@ Shared helpers:
 
 ### 3.3 `/add_folder`
 
+0. **Folder limit**: `db.getFolderQuota`; if `used >= max` replies *"⚠️ You've reached the limit of {max} folders. …"* and doesn't start the flow. If the limit is hit later (when the name arrives), the same message is sent and the flow ends. `/copy_folder` does the same check after its empty-state guard (section 3.7).
 1. Sets `action = 'add-folder'`.
 2. Asks the user: *"Please enter the name of the new folder:"*.
 3. **Validation & Edge Cases**:
@@ -254,7 +272,8 @@ Shared helpers:
 2. **Folder Selection**:
    * Displays an inline keyboard listing all user folders.
    * User clicks a folder button.
-   * Sets `flow.folder = { id, name }` and resets `flow.files = []` (the `add-files` flow starts when the folder list is shown).
+   * Loads the folder's files; if it already holds `MAX_FILES_PER_FOLDER`, alerts *"This folder is full …"* and keeps the folder list up.
+   * Sets `flow.folder = { id, name }`, resets `flow.files = []` and stores `flow.existingCount` (the `add-files` flow starts when the folder list is shown).
    * Sends prompt:
      > *"Selected folder: **{folderName}**.\nNow send me the files you want to add. When you are done, click 'Save'."*
 3. **Receiving Files**:
@@ -265,6 +284,8 @@ Shared helpers:
        * `photo`: Takes largest `PhotoSize`, default name `Photo YYYY-MM-DD HH:mm:ss` (or caption if provided).
        * `audio`: `audio.title` or `audio.file_name`.
        * `video` / `voice` / `sticker`: appropriate title, emoji, or caption.
+     * Ignores a file already in `flow.files`.
+     * If `existingCount + files.length` already reaches `MAX_FILES_PER_FOLDER`, replies *"⚠️ The folder can't take more files …"* instead of adding it.
      * Appends `{ id, name, type }` to `flow.files`.
    * **Albums** (messages with `media_group_id`) are not supported yet: their files are not added, and the bot warns once per album (tracked by `flow.rejectedGroupId`):
      > *"⚠️ Albums aren't supported yet. Please send files one by one."*
@@ -279,7 +300,7 @@ Shared helpers:
 5. **Saving / Finalizing**:
    * When user clicks `[ 💾 Save ]`:
      * If `flow.files.length === 0`, alerts user via callback query: *"⚠️ No files to save."*
-     * Appends `flow.files` to the folder (`db.addFiles`); files it already has are skipped.
+     * Appends `flow.files` to the folder (`db.addFiles`); files it already has are skipped. If they don't fit after all (e.g. files were added elsewhere meanwhile), the limit error is shown as an alert and nothing is saved.
      * Deletes the dynamic status message.
      * Sends: *"✅ Successfully saved {count} file(s) to '{folderName}'."*
      * Ends the flow (`flow = null`).
@@ -312,7 +333,31 @@ Buttons stay on old messages after their flow ended or another command replaced 
 
 ---
 
-### 3.7 `/remove_folder`
+### 3.7 `/copy_folder`
+
+1. **Empty State Guard**:
+   * If `folders.length === 0`:
+     > *"⚠️ You don't have any folders to copy."*
+     * Aborts flow.
+2. **Folder Limit**: same check as `/add_folder` (section 3.3): if the user is at their plan's folder limit, replies *"⚠️ You've reached the limit of {max} folders. …"* and doesn't start the flow.
+3. **Folder Selection**:
+   * Sets `flow = { kind: 'copy-folder', folder: null }`.
+   * Displays an inline keyboard of all folders (callback `cpf:select:{folderId}`) with a `[ ❌ Cancel ]` button (callback `cpf:cancel`).
+   * Once a folder is picked, sets `flow.folder` and edits the message to:
+     > *"Send me the name for the copy of **{folderName}** (1–32 characters):"*
+4. **Receiving the Name**: same validation as `/add_folder` (non-text inputs, length, duplicate names). On an invalid or taken name, the bot warns and keeps waiting. Text sent before a folder is picked is ignored.
+5. **Copying**:
+   * Reads the source folder's files first (`db.listFiles`), so a failed read leaves no empty folder behind.
+   * Creates the new folder (`db.addFolder`). If the folder limit was reached in the meantime, replies with the limit message and ends the flow.
+   * Copies the files into it (`db.addFiles`), in the same order. If that fails (e.g. a source folder from before the limits holds more than `MAX_FILES_PER_FOLDER` files), the new folder is removed again (`db.removeFolder`), the error is shown and the flow stays open. The source folder is never changed.
+6. **Completion**:
+   * Ends the flow (`flow = null`).
+   * Sends: *"✅ Copied {count} file(s) from **{folderName}** to the new folder **{newName}**."* An empty folder can be copied too ({count} = 0).
+7. **Cancel**: edits the message to *"Action cancelled."* and ends the flow.
+
+---
+
+### 3.8 `/remove_folder`
 
 1. **Empty State Guard**:
    * If `folders.length === 0`:
@@ -340,7 +385,7 @@ Buttons stay on old messages after their flow ended or another command replaced 
 
 ---
 
-### 3.8 `/remove_files`
+### 3.9 `/remove_files`
 
 1. **Empty State Guard**:
    * If `folders.length === 0`, warns: *"⚠️ You don't have any folders."*
@@ -381,7 +426,7 @@ Buttons stay on old messages after their flow ended or another command replaced 
 
 ---
 
-### 3.9 `/clear_data`
+### 3.10 `/clear_data`
 
 1. **High-Risk Destructive Warning**:
    * Sets `flow = { kind: 'clear-data' }`.
@@ -392,7 +437,7 @@ Buttons stay on old messages after their flow ended or another command replaced 
        * `[ ❌ Cancel ]` (callback `cd:cancel`)
 2. **Execution**:
    * On confirmation:
-     * Calls `db.clearUserData(userId)` to delete all folders and files.
+     * Calls `db.clearUserData(userId)` to delete all folders and files (the plan is kept).
      * Resets session to defaults (`ctx.session = initialSession()`).
      * Edits message to: *"🧹 All your data has been completely and permanently erased."*
    * On cancel:

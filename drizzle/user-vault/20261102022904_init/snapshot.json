@@ -2,9 +2,7 @@
   "version": "7",
   "dialect": "sqlite",
   "id": "4c031f8f-e723-4cb4-89d8-b9bd32eb937a",
-  "prevIds": [
-    "00000000-0000-0000-0000-000000000000"
-  ],
+  "prevIds": ["00000000-0000-0000-0000-000000000000"],
   "ddl": [
     {
       "name": "files",
@@ -97,19 +95,14 @@
     {
       "table": "files",
       "name": "files_pk",
-      "columns": [
-        "folder_id",
-        "file_id"
-      ],
+      "columns": ["folder_id", "file_id"],
       "nameExplicit": false,
       "entityType": "pks"
     },
     {
       "table": "folders",
       "name": "folders_pk",
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "entityType": "pks"
     }

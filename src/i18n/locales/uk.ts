@@ -7,6 +7,15 @@ const files = (count: number, bold = false): string => {
   return plural('uk', count, { one: `${n} файл`, few: `${n} файли`, many: `${n} файлів`, other: `${n} файлу` });
 };
 
+/** "N папка / папки / папок" */
+const folders = (count: number): string =>
+  plural('uk', count, {
+    one: `${count} папка`,
+    few: `${count} папки`,
+    many: `${count} папок`,
+    other: `${count} папки`,
+  });
+
 /** Ukrainian messages. Same keys and parameters as the source locale (src/i18n/locales/en.ts). */
 export const uk: Messages = {
   // --- Errors (keys are shared with the DB layer, see DB_ERROR_KEYS) ---
@@ -14,6 +23,13 @@ export const uk: Messages = {
   'error-folder-already-exists': (p: { name: string }) =>
     `⚠️ Папка з назвою '${p.name}' уже існує. Будь ласка, оберіть іншу назву.`,
   'error-folder-not-found': '⚠️ Папку не знайдено.',
+  'error-folder-limit': (p: { max: number }) =>
+    `⚠️ Ви досягли ліміту: ${folders(p.max)}. Видаліть папку за допомогою /remove_folder, щоб створити нову.`,
+  'error-file-limit': (p: { max: number; remaining: number }) =>
+    p.remaining === 0
+      ? `⚠️ Ця папка заповнена: папка може містити не більше ніж ${files(p.max)}.`
+      : `⚠️ Папка може містити не більше ніж ${files(p.max)}, тож до цієї можна додати ще лише ${files(p.remaining)}.`,
+  'error-db-get-quota': '❌ Не вдалося перевірити ліміт папок. Спробуйте пізніше.',
   'error-db-add-folder': '❌ Не вдалося створити папку. Спробуйте пізніше.',
   'error-db-rename-folder': '❌ Не вдалося перейменувати папку. Спробуйте пізніше.',
   'error-db-remove-folder': '❌ Не вдалося видалити папку. Спробуйте пізніше.',
@@ -66,6 +82,10 @@ export const uk: Messages = {
   'add-files-album-unsupported': '⚠️ Альбоми поки не підтримуються. Будь ласка, надсилайте файли по одному.',
   'add-files-nothing-to-save': '⚠️ Немає файлів для збереження.',
   'add-files-button-save': (p: { count: number }) => `💾 Зберегти (${p.count})`,
+  'add-files-folder-full': (p: { max: number }) =>
+    `Ця папка заповнена: у ній уже ${files(p.max)}. Оберіть іншу папку або спершу видаліть кілька файлів.`,
+  'add-files-limit-reached': (p: { max: number }) =>
+    `⚠️ До папки більше не можна додати файлів (максимум ${files(p.max)}). Натисніть <b>Зберегти</b>, щоб зберегти вже надіслані.`,
 
   // --- /rename_folder ---
   'rename-folder-no-folders': '⚠️ У вас немає папок, які можна перейменувати.',

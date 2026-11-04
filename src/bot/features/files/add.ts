@@ -4,7 +4,8 @@ import type { BotContext } from 'src/bot/context';
 import { activeFlow, awaitingInput, endFlow, type FlowContext } from 'src/bot/flow';
 import { findFolder, folderPicked, folderPicker, loadFoldersToPick } from 'src/bot/folder-picker';
 import { translateError } from 'src/bot/utils';
-import type { FileItem } from 'src/types';
+import { checkFileLimit } from 'src/db/validation';
+import { MAX_FILES_PER_FOLDER, type FileItem } from 'src/types';
 
 /**
  * Extracts file metadata (id, name, type) from an incoming Telegram message.
@@ -63,10 +64,27 @@ const handleSelectFolder = async (ctx: BotContext, folderId: string): Promise<vo
   if (!flow) return;
 
   const folder = await findFolder(ctx, folderId);
-  if (!folder) return;
+  if (!folder || !ctx.from) return;
+
+  const filesRes = await ctx.db.listFiles(ctx.from.id, folder.id);
+  if (filesRes.error) {
+    await ctx.answerCallbackQuery({ text: translateError(ctx.tText, filesRes) });
+    return;
+  }
+
+  // A full folder keeps the picker up, so another one can be chosen
+  const existingCount = filesRes.data.length;
+  if (checkFileLimit(existingCount, 1)) {
+    await ctx.answerCallbackQuery({
+      text: ctx.tText('add-files-folder-full', { max: MAX_FILES_PER_FOLDER }),
+      show_alert: true,
+    });
+    return;
+  }
 
   flow.folder = folder;
   flow.files = [];
+  flow.existingCount = existingCount;
 
   await ctx.answerCallbackQuery();
   await ctx.editMessageText(ctx.t('add-files-folder-selected', { name: folder.name }));
@@ -88,7 +106,15 @@ const handleFile = async (ctx: FlowContext<'add-files'>): Promise<void> => {
   }
 
   const fileItem = extractFileItem(ctx);
-  if (!fileItem) return;
+  // A file sent twice is saved once, so it doesn't take a second place
+  if (!fileItem || flow.files.some((f) => f.id === fileItem.id)) return;
+
+  // Repeats of files already in the folder are counted too, so this may stop a little early;
+  // the database has the final say when saving
+  if (checkFileLimit((flow.existingCount ?? 0) + flow.files.length, 1)) {
+    await ctx.reply(ctx.t('add-files-limit-reached', { max: MAX_FILES_PER_FOLDER }));
+    return;
+  }
 
   flow.files.push(fileItem);
   const count = flow.files.length;

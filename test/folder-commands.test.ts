@@ -214,3 +214,37 @@ describe('/clear_data', () => {
     expect(await bot.folders()).toHaveLength(2);
   });
 });
+
+describe('folder limit', () => {
+  const fill = async (bot: ReturnType<typeof createTestBot>) => {
+    for (let i = 0; i < 10; i++) await bot.addFolder(`Folder ${i}`);
+  };
+  const limitText =
+    "⚠️ You've reached the limit of 10 folders. Delete a folder with /remove_folder to create a new one.";
+
+  it('/add_folder refuses to start at the limit', async () => {
+    const bot = createTestBot();
+    await fill(bot);
+    await bot.send('/add_folder');
+    expect(bot.lastText()).toBe(limitText);
+    expect(bot.flow()).toBeNull();
+  });
+
+  it('/add_folder ends the flow if the limit is reached while asking for a name', async () => {
+    const bot = createTestBot();
+    await bot.send('/add_folder');
+    await fill(bot);
+    await bot.send('Late');
+    expect(bot.lastText()).toBe(limitText);
+    expect(bot.flow()).toBeNull();
+    expect(await names(bot)).toHaveLength(10);
+  });
+
+  it('/copy_folder refuses to start at the limit', async () => {
+    const bot = createTestBot();
+    await fill(bot);
+    await bot.send('/copy_folder');
+    expect(bot.lastText()).toBe(limitText);
+    expect(bot.flow()).toBeNull();
+  });
+});

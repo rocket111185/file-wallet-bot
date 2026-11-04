@@ -43,7 +43,7 @@ export const menuCommands = new CommandGroup<BotContext>();
 
 for (const { name, description, handler } of MENU) {
   const command = menuCommands.command(name, createTranslator(DEFAULT_LOCALE).text(description), handler);
-  const nonDefaultLocales = LOCALES.filter((locale) => locale !== DEFAULT_LOCALE)
+  const nonDefaultLocales = LOCALES.filter((locale) => locale !== DEFAULT_LOCALE);
 
   // Users whose Telegram language has a translation get a translated menu
   for (const locale of nonDefaultLocales) {

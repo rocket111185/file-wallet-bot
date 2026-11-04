@@ -108,12 +108,18 @@ describe('inline answers in the webhook response', () => {
       update_id: 1,
       inline_query: { id: 'q1', from: { id: 1, is_bot: false, first_name: 'User' }, query: '', offset: '' },
     };
-    const res = await webhookCallback(bot, 'cloudflare-mod')(
-      new Request('https://worker/', { method: 'POST', body: JSON.stringify(update) }),
-    );
+    const res = await webhookCallback(
+      bot,
+      'cloudflare-mod',
+    )(new Request('https://worker/', { method: 'POST', body: JSON.stringify(update) }));
 
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body).toMatchObject({ method: 'answerInlineQuery', inline_query_id: 'q1', cache_time: 30, is_personal: true });
+    expect(body).toMatchObject({
+      method: 'answerInlineQuery',
+      inline_query_id: 'q1',
+      cache_time: 30,
+      is_personal: true,
+    });
     expect(body.results).toHaveLength(2);
     expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();

@@ -35,5 +35,15 @@ export const files = sqliteTable(
   (t) => [primaryKey({ columns: [t.folderId, t.fileId] })],
 );
 
+/**
+ * At most one row (id 1): the user's plan. No row means the free plan. `clearUserData` leaves it alone,
+ * since upgrades are paid for.
+ */
+export const account = sqliteTable('account', {
+  id: integer().notNull().primaryKey(),
+  /** A `Plan` (src/types.ts) */
+  plan: text().notNull().default('free'),
+});
+
 export type FolderRow = typeof folders.$inferSelect;
 export type FileRow = typeof files.$inferSelect;
