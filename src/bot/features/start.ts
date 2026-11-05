@@ -2,10 +2,24 @@ import { Composer, type CommandContext } from 'grammy';
 
 import { menuCommandList } from 'src/bot/commands';
 import type { BotContext } from 'src/bot/context';
+import { startImportFolder } from 'src/bot/features/folders/import';
 import { endFlow } from 'src/bot/flow';
 
 /** `/start` payload of the help button above inline results; the chat bot answers it with a guide */
 export const HELP_START_PARAMETER = 'help';
+
+/** `/start` payload of a share link: this prefix, then the folder ID */
+export const SHARE_START_PREFIX = 's_';
+
+/** Folder IDs are 12 base64url characters, which Telegram allows in a `/start` payload as they are */
+const SHARE_PAYLOAD = new RegExp(`^${SHARE_START_PREFIX}([A-Za-z0-9_-]{12})$`);
+
+/**
+ * Link that opens the bot with `/start s_<folderId>`, to save a copy of the folder (sent by a folder
+ * tapped in inline mode). The folder ID is random, so it reveals nothing about the owner.
+ */
+export const shareLink = (botUsername: string, folderId: string): string =>
+  `https://t.me/${botUsername}?start=${SHARE_START_PREFIX}${folderId}`;
 
 /** `/start help`: the help button above inline results. The flow is kept, so tapping it mid-flow loses nothing. */
 const handleHelp = async (ctx: BotContext): Promise<void> => {
@@ -24,7 +38,12 @@ const handleWelcome = async (ctx: BotContext): Promise<void> => {
  * Unknown payloads get the plain welcome.
  */
 const handleStart = async (ctx: CommandContext<BotContext>): Promise<void> => {
-  switch (ctx.match.trim()) {
+  const payload = ctx.match.trim();
+
+  const shared = payload.match(SHARE_PAYLOAD);
+  if (shared) return startImportFolder(ctx, shared[1]);
+
+  switch (payload) {
     case HELP_START_PARAMETER:
       return handleHelp(ctx);
     default:

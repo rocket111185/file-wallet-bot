@@ -37,6 +37,7 @@ export const uk: Messages = {
   'error-db-add-files': '❌ Не вдалося зберегти файли. Спробуйте пізніше.',
   'error-db-remove-files': '❌ Не вдалося видалити файли. Спробуйте пізніше.',
   'error-db-list-files': '❌ Не вдалося завантажити файли. Спробуйте пізніше.',
+  'error-db-get-shared-folder': '❌ Не вдалося відкрити папку, якою з вами поділилися. Спробуйте пізніше.',
   'error-db-clear-data': '❌ Не вдалося видалити ваші дані. Спробуйте пізніше.',
 
   // --- Common ---
@@ -61,7 +62,7 @@ export const uk: Messages = {
     '<b>Доступні команди:</b>\n' +
     `${p.commands}\n\n` +
     `У будь-якому чаті введіть <code>@${p.botUsername}</code>, щоб побачити свої папки, а потім додайте номер ` +
-    `папки (наприклад, <code>@${p.botUsername} 1</code>), щоб її відкрити. Торкніться файлу, щоб миттєво надіслати його!`,
+    `папки (наприклад, <code>@${p.botUsername} 1</code>), щоб її відкрити. Торкніться файлу, щоб миттєво надіслати його, або папки, щоб поділитися її копією!`,
 
   // --- /start help ---
   'inline-guide': (p: { botUsername: string }) =>
@@ -72,7 +73,9 @@ export const uk: Messages = {
     'поле повідомлення. Над ним з’являться ваші папки з номерами.\n\n' +
     `<b>3. Відкрийте папку.</b> Додайте номер папки: <code>@${p.botUsername} 2</code> покаже файли ` +
     'папки 2. Торкніться файлу, щоб надіслати його.\n\n' +
-    '<b>4. Поверніться назад.</b> Зітріть номер, щоб знову побачити всі папки. Якщо торкнутися самої папки, надішлеться лише її назва.\n\n' +
+    '<b>4. Поверніться назад.</b> Зітріть номер, щоб знову побачити всі папки.\n\n' +
+    '<b>5. Поділіться папкою.</b> Якщо торкнутися самої папки, вона надішлеться в чат із кнопкою <b>Зберегти копію</b>: ' +
+    'кожен, хто її натисне, отримає власну копію папки.\n\n' +
     '💡 Нові та змінені папки можуть з’явитися в inline-пошуку із затримкою до пів хвилини.\n\n' +
     'Надішліть /start, щоб побачити всі команди.',
 
@@ -115,6 +118,17 @@ export const uk: Messages = {
     `Надішліть назву для копії <b>${p.name}</b> (1–${p.max} символів):`,
   'copy-folder-success': (p: { name: string; newName: string; count: number }) =>
     `✅ Скопійовано ${files(p.count)} з <b>${p.name}</b> до нової папки <b>${p.newName}</b>.`,
+
+  // --- Shared folders ---
+  'import-folder-preview': (p: { name: string; count: number }) =>
+    `📁 <b>${p.name}</b>\n\nЗ вами поділилися цією папкою: ${files(p.count)}. Зберегти копію до ваших папок?`,
+  'import-folder-button-save': '📥 Зберегти копію',
+  'import-folder-not-found': '⚠️ Це посилання більше не працює: папку видалено.',
+  'import-folder-name-taken': (p: { name: string; max: number }) =>
+    `У вас уже є папка з назвою <b>${p.name}</b>. Надішліть назву для копії (1–${p.max} символів):`,
+  'import-folder-success': (p: { name: string; count: number; botUsername: string }) =>
+    `✅ Папку <b>${p.name}</b> (${files(p.count)}) збережено до ваших папок. ` +
+    `Введіть <code>@${p.botUsername}</code> у будь-якому чаті, щоб скористатися нею.`,
 
   // --- /remove_folder ---
   'remove-folder-no-folders': '⚠️ У вас немає папок, які можна видалити.',
@@ -172,4 +186,7 @@ export const uk: Messages = {
   'inline-unknown-folder-description': 'Зітріть номер, щоб побачити всі папки',
   'inline-empty-folder-title': (p: { name: string }) => `«${p.name}» порожня`,
   'inline-empty-folder-description': 'Зітріть номер, щоб повернутися до папок',
+  'inline-shared-folder-message': (p: { name: string }) =>
+    `📁 <b>${p.name}</b>\nНатисніть кнопку нижче, щоб зберегти копію цієї папки.`,
+  'inline-share-button': '📥 Зберегти копію',
 };

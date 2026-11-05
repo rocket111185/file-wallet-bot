@@ -5,6 +5,7 @@ import type { Update } from 'grammy/types';
 import { createChatBot } from 'src/bot/chat-bot';
 import type { BotContext } from 'src/bot/context';
 import { CloudflareDODatabase } from 'src/db/db.cloudflare-do';
+import { DurableObjectShareRegistry } from 'src/db/share-registry.durable-object';
 import { DurableObjectSessionStorage } from 'src/session/session.durable-object';
 import { createSerialQueue } from 'src/utils';
 
@@ -29,7 +30,7 @@ export class UserChat extends DurableObject<Env> {
     this.bot ??= createChatBot({
       token: this.env.BOT_TOKEN,
       // Folders and files live in the user's UserVault, never in this object: it only keeps the session
-      db: new CloudflareDODatabase(this.env.USER_VAULT),
+      db: new CloudflareDODatabase(this.env.USER_VAULT, new DurableObjectShareRegistry(this.env.FOLDER_SHARE)),
       botInfo: this.env.BOT_INFO,
       sessionStorage: new DurableObjectSessionStorage(this.ctx.storage),
     });

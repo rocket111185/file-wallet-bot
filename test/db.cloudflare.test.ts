@@ -320,3 +320,33 @@ describe('CloudflareKVDatabase: limits', () => {
     expect(!list.error && list.data).toHaveLength(MAX_FILES_PER_FOLDER);
   });
 });
+
+describe('CloudflareKVDatabase: shared folders', () => {
+  it("opens another user's folder by its ID, and forgets it once removed", async () => {
+    const db = new CloudflareKVDatabase(createMockKV());
+    const add = await db.addFolder(1, 'Work');
+    if (add.error) throw new Error(add.key);
+    const work = add.data.id;
+    await db.addFiles(1, work, [{ id: 'a', name: 'a.jpg', type: 'photo' }]);
+
+    expect(await db.getSharedFolder(work)).toEqual({
+      error: false,
+      data: { folder: { id: work, name: 'Work' }, files: [{ id: 'a', name: 'a.jpg', type: 'photo' }] },
+    });
+
+    await db.removeFolder(1, work);
+    expect(await db.getSharedFolder(work)).toEqual({ error: false, data: null });
+  });
+
+  it('forgets every folder when the data is cleared, and knows no unknown IDs', async () => {
+    const kv = createMockKV();
+    const db = new CloudflareKVDatabase(kv);
+    const add = await db.addFolder(1, 'Work');
+    if (add.error) throw new Error(add.key);
+    await db.clearUserData(1);
+
+    expect(await db.getSharedFolder(add.data.id)).toEqual({ error: false, data: null });
+    expect(await db.getSharedFolder('nonexistent1')).toEqual({ error: false, data: null });
+    expect([...(kv as unknown as { _raw: Map<string, string> })._raw.keys()]).toEqual([]);
+  });
+});

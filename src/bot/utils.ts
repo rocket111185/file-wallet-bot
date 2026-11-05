@@ -1,7 +1,8 @@
 import type { BotContext } from 'src/bot/context';
+import type { Database } from 'src/db/db.interface';
 import { checkFolderLimit } from 'src/db/validation';
 import type { MessageKey, Translate } from 'src/i18n/i18n';
-import type { FileItem, StatusError } from 'src/types';
+import type { FileItem, Status, StatusError } from 'src/types';
 
 /**
  * Translates an error returned by the DB layer
@@ -44,4 +45,28 @@ export const hasFolderRoom = async (ctx: BotContext): Promise<boolean> => {
     return false;
   }
   return true;
+};
+
+/**
+ * Creates a folder named `name` holding `files`, in their order (`/copy_folder`, a shared folder).
+ * If the files can't be added (e.g. a folder from before the limits holds too many), the new folder
+ * is removed again, so no half-made copy is left behind.
+ *
+ * @returns The new folder's ID, or the error of the step that failed
+ */
+export const addFolderWithFiles = async (
+  db: Database,
+  userId: number,
+  name: string,
+  files: FileItem[],
+): Promise<Status<{ id: string }>> => {
+  const addRes = await db.addFolder(userId, name);
+  if (addRes.error) return addRes;
+
+  const filesRes = await db.addFiles(userId, addRes.data.id, files);
+  if (filesRes.error) {
+    await db.removeFolder(userId, addRes.data.id);
+    return filesRes;
+  }
+  return addRes;
 };

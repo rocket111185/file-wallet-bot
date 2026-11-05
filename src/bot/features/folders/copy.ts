@@ -3,7 +3,7 @@ import { Composer } from 'grammy';
 import type { BotContext } from 'src/bot/context';
 import { activeFlow, awaitingInput, cancelFlow, endFlow, type FlowContext } from 'src/bot/flow';
 import { findFolder, folderPicker, loadFoldersToPick } from 'src/bot/folder-picker';
-import { hasFolderRoom, translateError } from 'src/bot/utils';
+import { addFolderWithFiles, hasFolderRoom, translateError } from 'src/bot/utils';
 import { DB_ERROR_KEYS, MAX_FOLDER_NAME_LENGTH } from 'src/types';
 
 export const startCopyFolder = async (ctx: BotContext): Promise<void> => {
@@ -42,19 +42,12 @@ const handleName = async (ctx: FlowContext<'copy-folder'>, name: string): Promis
     return;
   }
 
-  // A taken or invalid name keeps the flow going, so the user can just send another one
-  const addRes = await ctx.db.addFolder(userId, name);
-  if (addRes.error) {
-    // Another name won't help once the limit is reached
-    if (addRes.key === DB_ERROR_KEYS.FOLDER_LIMIT_REACHED) await endFlow(ctx);
-    await ctx.reply(translateError(ctx.t, addRes));
-    return;
-  }
-
-  const copyRes = await ctx.db.addFiles(userId, addRes.data.id, filesRes.data);
+  // A taken or invalid name keeps the flow going, so the user can just send another one. The original
+  // is untouched either way.
+  const copyRes = await addFolderWithFiles(ctx.db, userId, name, filesRes.data);
   if (copyRes.error) {
-    // Don't leave a half-made copy around; the original is untouched either way
-    await ctx.db.removeFolder(userId, addRes.data.id);
+    // Another name won't help once the limit is reached
+    if (copyRes.key === DB_ERROR_KEYS.FOLDER_LIMIT_REACHED) await endFlow(ctx);
     await ctx.reply(translateError(ctx.t, copyRes));
     return;
   }

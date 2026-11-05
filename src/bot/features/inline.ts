@@ -1,14 +1,13 @@
 import { createHash } from 'node:crypto';
-import { Composer, InlineQueryResultBuilder } from 'grammy';
+import { Composer, InlineKeyboard, InlineQueryResultBuilder } from 'grammy';
 import type { InlineQueryResult } from 'grammy/types';
 
 import type { BaseContext } from 'src/bot/context';
 import { fileDisplayName, uniqueFiles } from 'src/bot/utils';
-import { HELP_START_PARAMETER } from 'src/bot/features/start';
+import { HELP_START_PARAMETER, shareLink } from 'src/bot/features/start';
 
 import type { Translate } from 'src/i18n/i18n';
-import type { FileItem } from 'src/types';
-import { escapeHtml } from 'src/utils';
+import type { FileItem, FolderInfo } from 'src/types';
 
 // Telegram accepts at most 50 results per answer; the rest is fetched via `next_offset`
 const PAGE_SIZE = 50;
@@ -51,6 +50,15 @@ const fileResult = (t: Translate, file: FileItem): InlineQueryResult => {
       return InlineQueryResultBuilder.documentCached(id, title, file.id);
   }
 };
+
+/**
+ * A folder in the list. Tapping it sends the folder's name with a "Save a copy" button: a share link
+ * that lets whoever taps it copy the folder into their own vault (src/bot/features/folders/import.ts).
+ */
+const folderResult = (ctx: BaseContext, folder: FolderInfo, n: number): InlineQueryResult =>
+  InlineQueryResultBuilder.article(resultId('folder', folder.id), `${n}. ${folder.name}`, {
+    reply_markup: new InlineKeyboard().url(ctx.tText('inline-share-button'), shareLink(ctx.me.username, folder.id)),
+  }).text(ctx.t('inline-shared-folder-message', { name: folder.name }), { parse_mode: 'HTML' });
 
 const info = (id: string, title: string, description: string): InlineQueryResult =>
   InlineQueryResultBuilder.article(id, title, { description }).text(title);
@@ -99,14 +107,7 @@ export const handleInlineQuery = async (ctx: BaseContext, cacheSeconds = DEFAULT
     }
 
     const { page, next_offset } = paginate(folders, offset);
-    const results = page.map((folder, i) => {
-      const n = offset + i + 1;
-      // How the numbers work is explained by the help button
-      return InlineQueryResultBuilder.article(resultId('folder', folder.id), `${n}. ${folder.name}`).text(
-        `<b>${escapeHtml(folder.name)}</b>`,
-        { parse_mode: 'HTML' },
-      );
-    });
+    const results = page.map((folder, i) => folderResult(ctx, folder, offset + i + 1));
 
     await ctx.answerInlineQuery(results, { ...listOpts, next_offset });
     return;

@@ -5,6 +5,7 @@ import type { Message, Update, UserFromGetMe } from 'grammy/types';
 import { createChatBot } from 'src/bot/chat-bot';
 import { CloudflareDODatabase } from 'src/db/db.cloudflare-do';
 import { CloudflareKVDatabase } from 'src/db/db.cloudflare';
+import { DurableObjectShareRegistry } from 'src/db/share-registry.durable-object';
 import type { UserSession } from 'src/session/session';
 
 // Each test bot is a different user, so it gets a fresh UserVault: objects keep their storage
@@ -38,7 +39,10 @@ export const createTestBot = ({
 }: { storage?: 'do' | 'kv'; languageCode?: string } = {}) => {
   const userId = ++nextUserId;
   const { kv, data } = createMemoryKV();
-  const db = storage === 'do' ? new CloudflareDODatabase(env.USER_VAULT) : new CloudflareKVDatabase(kv);
+  const db =
+    storage === 'do'
+      ? new CloudflareDODatabase(env.USER_VAULT, new DurableObjectShareRegistry(env.FOLDER_SHARE))
+      : new CloudflareKVDatabase(kv);
   const sessions = new MemorySessionStorage<UserSession>();
 
   const bot = createChatBot({

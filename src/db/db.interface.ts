@@ -18,6 +18,12 @@ export interface Database {
    */
   getFolderContents(userId: string | number, folderNumber: number): Promise<Status<FolderContents | null>>;
 
+  /**
+   * The folder a share link points to (`/start s_<folderId>`), whoever owns it, with its files.
+   * `null` when the link points to no folder (never existed or was removed).
+   */
+  getSharedFolder(folderId: string): Promise<Status<FolderContents | null>>;
+
   /** Folders the user has and how many their plan allows */
   getFolderQuota(userId: string | number): Promise<Status<FolderQuota>>;
 

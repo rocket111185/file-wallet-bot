@@ -22,21 +22,24 @@ The Telegram bot intended to organize files in a simple way
    // so stack traces in the logs still point at the real source
    "minify": true,
    ```
-4. Set up the Durable Object bindings in the same `wrangler.jsonc`. The code reads them as `env.USER_CHAT` and
-   `env.USER_VAULT`, and both classes are exported from `src/index.ts`:
+4. Set up the Durable Object bindings in the same `wrangler.jsonc`. The code reads them as `env.USER_CHAT`,
+   `env.USER_VAULT` and `env.FOLDER_SHARE`, and all three classes are exported from `src/index.ts`:
    ```jsonc
    "durable_objects": {
      "bindings": [
        // One UserChat per user: queues their private-chat updates and holds their session
        { "name": "USER_CHAT", "class_name": "UserChat" },
        // One UserVault per user: their folders and files in SQLite (Drizzle migrations from drizzle/)
-       { "name": "USER_VAULT", "class_name": "UserVault" }
+       { "name": "USER_VAULT", "class_name": "UserVault" },
+       // One FolderShare per folder: the owner of a shared folder, so share links don't contain user IDs
+       { "name": "FOLDER_SHARE", "class_name": "FolderShare" }
      ]
    },
-   // Declares the classes, so the first deploy creates their namespaces. Both need SQLite storage
+   // Declares the classes, so the first deploy creates their namespaces. All need SQLite storage
    "exports": {
      "UserChat": { "type": "durable-object", "storage": "sqlite" },
-     "UserVault": { "type": "durable-object", "storage": "sqlite" }
+     "UserVault": { "type": "durable-object", "storage": "sqlite" },
+     "FolderShare": { "type": "durable-object", "storage": "sqlite" }
    },
    ```
    Then run `npx wrangler types` to regenerate the `Env` types.

@@ -12,6 +12,7 @@ This document describes the architecture, database schema, and detailed conversa
 * **Runtime**: [Cloudflare Workers](https://developers.cloudflare.com/workers/) using [grammY](https://grammy.dev/).
 * **Zero-Cost Storage Strategy**: The bot **does not** store binary files. It stores Telegram's internal `file_id` references. When a user requests or shares a file, Telegram servers deliver it directly.
 * **Database**: one [Durable Object](https://developers.cloudflare.com/durable-objects/) per user (`UserVault`) keeps their folders and file metadata in its own SQLite database. Both the Worker (inline mode) and `UserChat` (chat commands) reach it over RPC. Writes are local to the object and strongly consistent, and inline mode opens a folder in a single call.
+* **Sharing**: a folder tapped in inline mode sends a link that lets anyone save a copy of it (section 3.11). The link holds only the folder ID; a third Durable Object, `FolderShare` (one per folder), knows whose vault the folder is in (section 2.3.E).
 * **Sessions**: another Durable Object per user (`UserChat`, SQLite storage) handles all updates from the user's private chat, one at a time, and keeps their session. Inline queries are answered directly by the Worker and never reach it.
 * **Alternative storage**: folders and files used to live in [Workers KV](https://developers.cloudflare.com/kv/). That implementation (`src/db/db.cloudflare.ts`) is kept as an alternative `Database`, but the bot doesn't use it (section 2.3).
 
@@ -50,7 +51,7 @@ export type FileItem = {
 };
 
 export type FolderInfo = {
-  id: string; // Generated unique folder ID (e.g., 12-char Base64URL via Uint8Array.prototype.toBase64)
+  id: string; // Generated unique folder ID (12-char Base64URL via Uint8Array.prototype.toBase64); also its share link
   name: string; // User-defined display name
 };
 ```
@@ -81,6 +82,9 @@ export interface Database {
   // Folder at 1-based position `folderNumber` (listFolders order) with its files, for inline mode; null if none
   getFolderContents(userId: string | number, folderNumber: number): Promise<Status<FolderContents | null>>;
 
+  // The folder a share link points to, whoever owns it, with its files; null if none (section 2.3.E)
+  getSharedFolder(folderId: string): Promise<Status<FolderContents | null>>;
+
   // Folders the user has (`used`) and how many their plan allows (`max`), see 2.3.D
   getFolderQuota(userId: string | number): Promise<Status<FolderQuota>>;
 
@@ -101,12 +105,14 @@ Data is partitioned cleanly between persistent bot data (handled by `Database`) 
   * `account (id PK, plan)`: at most one row (`id = 1`) holding the user's plan; no row means `free`. `clearUserData` leaves it alone. `setPlan(plan)` (an RPC method of `UserVault`, not part of `Database` yet) writes it.
 * **Migrations**: `npm run db:generate` (drizzle-kit) writes them to `drizzle/user-vault`; they're never edited by hand. Each vault applies pending ones in its constructor, synchronously and in one transaction, before it takes any call.
 * **Batched writes**: a SQLite-backed Durable Object accepts at most 100 bound parameters per statement, so `addFiles` inserts and `removeFiles` deletes in batches of 10 rows or IDs (`FILE_WRITE_BATCH`), all inside one transaction. The size is fixed with a margin rather than computed from the column count: 10 rows fit as long as `files` has at most 10 columns (5 today), and the multi-batch tests fail if a batch ever outgrows the limit.
+* **Folder IDs**: 12-char base64url strings from 9 random bytes (72 bits), unique across all users, since a folder's ID is also its share link. `addFolder` registers the new ID in the share registry before inserting the folder (section 2.3.E).
 * **Atomicity**: methods are async, but every check-then-write (e.g. the duplicate-name check and the insert in `addFolder`) runs in one synchronous `db.transaction`, so it's atomic and no other call can interleave with it. The object belongs to one user, so its methods take no user ID.
 
 #### B. KV Layout (`CloudflareKVDatabase`, `src/db/db.cloudflare.ts`)
 Kept as an alternative `Database`; not wired into the bot:
 1. **User Folders**: key `folders:${userId}`, value: serialized `FolderInfo[]` (`[{ id, name }]`).
 2. **Folder Contents**: key `files:${userId}:${folderId}`, value: serialized `FileItem[]`.
+3. **Shared Folders**: key `share:${folderId}`, value: the owner's user ID (what the share registry holds in 2.3.E; the KV implementation needs no separate registry). Written by `addFolder`, deleted with the folder.
 
 #### C. Session Storage (Durable Object `UserChat`, not KV)
 * **Object**: one per user, named by the private chat ID (equal to the user ID), via `env.USER_CHAT.getByName(chatId)`.
@@ -128,6 +134,19 @@ Kept as an alternative `Database`; not wired into the bot:
 * Both checks live in `src/db/validation.ts` (`checkFolderLimit`, `checkFileLimit`) and run inside the same transaction as the write, so they can't be raced.
 * Only files new to the folder count: repeats (of saved files or within the batch) are skipped as before. A batch that doesn't fit entirely is refused as a whole, with `FILE_LIMIT_REACHED { max, remaining }`.
 * Data from before the limits is kept: a user over a limit can't add more until they're back under it.
+
+#### E. Shared Folders (`ShareRegistry`)
+A share link (`t.me/<bot>?start=s_<folderId>`, section 3.11) holds only the folder ID, never the owner's user ID. Vaults are named by user ID, so the link alone doesn't say which vault to open; the share registry does. Like the session layer (2.4), it's an interface plus an implementation:
+* `src/db/share-registry.ts`: the `ShareRegistry` interface, with no Cloudflare types.
+  * `register(folderId, userId)`: records the owner; `false` if another user already owns the ID.
+  * `owner(folderId)`: the owner's user ID, or `null`.
+  * `unregister(folderId, userId)`: forgets the owner, only if it is `userId`.
+* `src/db/share-registry.durable-object.ts`: `DurableObjectShareRegistry`, over one Durable Object `FolderShare` per folder (`env.FOLDER_SHARE.getByName(folderId)`, the only place that touches the namespace). Each holds one value, the owner's user ID, in its synchronous key-value storage. Strongly consistent, so a link works the moment it's sent, unlike with KV.
+* **Wiring**: `CloudflareDODatabase` gets a `ShareRegistry` in its constructor, for `getSharedFolder`. `UserVault` builds its own `DurableObjectShareRegistry` from `env` (a Durable Object can't be handed objects) to keep the registry up to date.
+* **Registering**: `addFolder` checks the name and the folder limit, registers a fresh ID (`vault.ctx.id.name` is the owner), then inserts the folder, checking again. So a link to an existing folder always resolves. If another user owns the ID (a random collision, as likely as two UUIDs colliding), it tries a new one, up to 3 times. If the insert is refused after all, the ID is unregistered again.
+* **Removing**: `removeFolder` and `clearUserData` unregister the removed folders, best effort.
+* **Resolving** (`getSharedFolder`): `owner(folderId)`, then that vault's `getFolder(folderId)`. An entry left behind by a removed folder is harmless: the vault has no such folder, so the answer is `null` ("link no longer works").
+* **Folders from before sharing**: each vault registers its existing folders once, in the background when it starts, and then sets the flag `shares-registered` in its own key-value storage. A failed run leaves the flag unset and is retried at the next start.
 
 ### 2.4 Session Management (grammY)
 
@@ -169,6 +188,12 @@ export type Flow =
       selected: string[];                          // IDs of the files marked for removal
       page: number;                                // 0-based page of the file list
     }
+  | {
+      kind: 'import-folder';
+      folderId: string;                            // the shared folder; its files are read when saving
+      menuMessageId: number;                       // the preview; buttons elsewhere are stale
+      naming: boolean;                             // name taken, a new name is awaited as text
+    }
   | { kind: 'clear-data' };
 
 export type UserSession = { flow: Flow | null };
@@ -185,9 +210,9 @@ The chat bot's handlers are grouped by feature in `src/bot/features/`. Each feat
 ```
 src/bot/commands.ts  the command menu (registers each command's handler), /cancel
 src/bot/features/
-  start.ts           /start and its deep-link payloads (/start help)
+  start.ts           /start and its deep-link payloads (/start help, /start s_<folderId>)
   folders/           add.ts (/add_folder), rename.ts (/rename_folder), remove.ts (/remove_folder),
-                     copy.ts (/copy_folder)
+                     copy.ts (/copy_folder), import.ts (shared folders, /start s_<folderId>)
   files/             add.ts (/add_files), remove.ts (/remove_files)
   clear-data.ts      /clear_data
   inline.ts          inline queries (Worker bot)
@@ -241,7 +266,8 @@ Shared helpers:
   * How to share files in any chat using inline queries: `@botname` lists folders, `@botname {number}` opens one.
   * List of available commands: the menu commands with their descriptions, generated from `src/bot/commands.ts` (section 2.5), so it always matches the command menu. `/start` itself is not listed.
 * **`/start help`** (deep link from the inline help button, section 4.2) replies with the inline search guide (`inline-guide`) instead, and **keeps** the current flow, so tapping the button mid-flow (e.g. while adding files) loses nothing. It can be the user's very first message (Telegram shows its Start button, which sends `/start help`), so the guide is self-contained: it also explains how to create a folder and add files, and points to `/start` for all commands. It needs no stored data.
-* Any other payload (`/start whatever`) is treated as plain `/start`.
+* **`/start s_<folderId>`** (a share link, section 3.11) shows the shared folder with Save / Cancel. Like `/start help`, it can be the user's very first message.
+* Any other payload (`/start whatever`, or `s_` with a malformed ID) is treated as plain `/start`.
 
 ---
 
@@ -449,20 +475,38 @@ Buttons stay on old messages after their flow ended or another command replaced 
 
 ---
 
+### 3.11 Importing a Shared Folder (`/start s_<folderId>`)
+
+A folder tapped in inline mode is sent with a `[ 📥 Save a copy ]` URL button (section 4.2). Tapping it opens the bot with `/start s_<folderId>`. The user gets a copy **by value**: later changes to either folder don't affect the other. File IDs can be reused by any user, since Telegram's `file_id`s belong to the bot.
+
+1. **Opening the link**: ends the current flow, then `db.getSharedFolder(folderId)`.
+   * No such folder (never existed or removed): *"⚠️ This link no longer works: the folder was removed."*
+   * Folder limit reached (section 3.3): the limit message, no flow.
+2. **Preview**: *"📁 **{folderName}**\n\nThis folder was shared with you: {count} file(s). Save a copy to your folders?"* with `[ 📥 Save a copy ]` (callback `imf:save`) and `[ ❌ Cancel ]` (callback `imf:cancel`). Sets `flow = { kind: 'import-folder', folderId, menuMessageId, naming: false }`. Both buttons only act on this preview (`menuMessageId`); on an older one they are stale (section 3.5).
+3. **Save**: reads the folder again, so the copy holds what the folder holds now, and creates a folder with its name and files (`addFolderWithFiles`, shared with `/copy_folder`: a folder whose files can't be added is removed again).
+   * Removed meanwhile: the preview becomes the "no longer works" message, and the flow ends.
+   * **Name taken**: the preview becomes *"You already have a folder named **{folderName}**. Send me a name for the copy (1–32 characters):"* and `flow.naming = true`. The name is then validated like `/copy_folder`'s (section 3.7): an invalid or taken one gets a warning and the bot keeps waiting. Text sent while the preview is up is ignored.
+   * Folder limit reached meanwhile: the limit message, and the flow ends.
+4. **Completion**: *"✅ Saved **{name}** with {count} file(s) to your folders. Type `@botname` in any chat to use it."* (replacing the preview when Save was pressed). Ends the flow.
+5. **Cancel**: edits the preview to *"Action cancelled."* and ends the flow.
+6. The owner opening their own link gets a copy too, under a new name (their folder already has the name).
+
+---
+
 ## 4. Telegram Inline Query Behavior
 
 Telegram inline queries operate statelessly. When a user invokes `@botname`, Telegram requests an array of `InlineQueryResult` items to display in the inline popup.
 
 ### 4.0 Why folders are opened by number
 
-Selecting **any** inline result sends it to the chat: every result type is either a media item or carries an `InputMessageContent`, and there is no result type that only triggers an action. So a folder cannot be "opened" by tapping it. Instead, the query text is the folder's number:
+Selecting **any** inline result sends it to the chat: every result type is either a media item or carries an `InputMessageContent`, and there is no result type that only triggers an action. So a folder cannot be "opened" by tapping it. Instead, the query text is the folder's number, and tapping a folder shares it (section 4.2):
 
 ```
 +-------------------------------------------------------------+
 | User types: @file_wallet_bot                                |
 +-------------------------------------------------------------+
 | [ ❓ How to use inline search ]  -> opens bot: /start help   |
-| [1. Work Documents]                                         |
+| [1. Work Documents]   -> sends a "Save a copy" share link   |
 | [2. Personal Photos]                                        |
 +-------------------------------------------------------------+
 
@@ -488,8 +532,8 @@ Folder numbers are the folder's 1-based position in the user's folder list (`fol
   * Title: *"No folders found"*
   * Description: *"Open the bot chat and use /add_folder to create one"*
 * Otherwise: each folder is an `InlineQueryResultArticle`:
-  * Title: `{n}. {folderName}`, no description (the help button explains the numbers)
-  * Selecting it (by mistake) sends `📁 {folderName}`; this cannot be prevented (see 4.0).
+  * Title: `{n}. {folderName}`, no description: the help button's guide explains both the numbers and sharing (its step 5, *Share a folder*).
+  * Selecting it **shares the folder**: it sends *"📁 **{folderName}**\nTap the button below to save a copy of this folder."* with a `[ 📥 Save a copy ]` URL button to `https://t.me/<bot>?start=s_<folderId>` (section 3.11). Whoever has the message (e.g. everyone in a group) can save a copy, until the folder is removed. The link holds the random folder ID only, never the owner's user ID.
 * Pagination: up to 50 results per answer, the rest via `next_offset`. Numbering continues across pages.
 
 ### 4.3 Folder Contents (`@file_wallet_bot {n}`)
@@ -521,7 +565,7 @@ Folder numbers are the folder's 1-based position in the user's folder list (`fol
 1. **Webhook Security**:
    * Verify the `X-Telegram-Bot-Api-Secret-Token` header on incoming POST requests to ensure updates originate from Telegram.
 2. **Cloudflare Configuration** (`wrangler.jsonc`, kept out of git; the README lists what a fresh copy must contain):
-   * Durable Objects `USER_CHAT` (`UserChat`) and `USER_VAULT` (`UserVault`), both declared in `exports` with `"storage": "sqlite"`.
+   * Durable Objects `USER_CHAT` (`UserChat`), `USER_VAULT` (`UserVault`) and `FOLDER_SHARE` (`FolderShare`), all declared in `exports` with `"storage": "sqlite"`.
    * `rules` with `{ "type": "Text", "globs": ["**/*.sql"], "fallthrough": true }`: required, so the Drizzle migrations (`drizzle/`) can be imported as text.
    * `"minify": true`: required. It roughly halves the bundle (about 480 KiB to 250 KiB, most of it Drizzle and grammY) and the startup CPU time. `"upload_source_maps": true` keeps stack traces in the logs pointing at the real source.
    * No KV namespace is declared, since the bot doesn't use KV. `CloudflareKVDatabase` would need one added back.

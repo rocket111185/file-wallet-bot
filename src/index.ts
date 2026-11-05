@@ -2,11 +2,13 @@ import { webhookCallback } from 'grammy';
 
 import { createWorkerBot } from 'src/bot/worker-bot';
 import { CloudflareDODatabase } from 'src/db/db.cloudflare-do';
+import { DurableObjectShareRegistry } from 'src/db/share-registry.durable-object';
 import { logger } from 'src/logger';
 
 // Durable Object classes must be exported from the main module
 export { UserChat } from 'src/bot/user-chat';
 export { UserVault } from 'src/db/db.cloudflare-do';
+export { FolderShare } from 'src/db/share-registry.durable-object';
 
 /**
  * INLINE_CACHE_SECONDS can be edited in the dashboard, where it may arrive as text, so it is parsed
@@ -27,7 +29,7 @@ export default {
       return new Response('Server misconfigured', { status: 500 });
     }
 
-    const db = new CloudflareDODatabase(env.USER_VAULT);
+    const db = new CloudflareDODatabase(env.USER_VAULT, new DurableObjectShareRegistry(env.FOLDER_SHARE));
 
     const bot = createWorkerBot({
       token: env.BOT_TOKEN,

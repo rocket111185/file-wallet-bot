@@ -2,14 +2,16 @@ import { runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { drizzle } from 'drizzle-orm/durable-sqlite';
 import { migrate } from 'drizzle-orm/durable-sqlite/migrator';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import migrations from '../drizzle/user-vault/migrations';
 import { CloudflareDODatabase, type UserVault } from 'src/db/db.cloudflare-do';
+import { DurableObjectShareRegistry } from 'src/db/share-registry.durable-object';
 import { DB_ERROR_KEYS, MAX_FILES_PER_FOLDER, type FileItem, type Status } from 'src/types';
 
-// Real UserVault objects (remote bindings are off in vitest.config.mts)
-const db = new CloudflareDODatabase(env.USER_VAULT);
+// Real UserVault and FolderShare objects (remote bindings are off in vitest.config.mts)
+const shares = new DurableObjectShareRegistry(env.FOLDER_SHARE);
+const db = new CloudflareDODatabase(env.USER_VAULT, shares);
 
 // Every test gets its own user, and so its own UserVault
 let nextUserId = 1_000;
@@ -349,5 +351,132 @@ describe('UserVault: migrations', () => {
 
     expect(await folderNames(user)).toEqual(['Work']);
     expect(await fileIds(user, work)).toEqual(['a']);
+  });
+});
+
+describe('CloudflareDODatabase: shared folders', () => {
+  it('registers every new folder to its owner', async () => {
+    const user = newUser();
+    const work = await addFolder(user, 'Work');
+
+    expect(await shares.owner(work)).toBe(String(user));
+  });
+
+  it("opens another user's folder by its ID, with its files", async () => {
+    const owner = newUser();
+    const work = await addFolder(owner, 'Work');
+    await db.addFiles(owner, work, [file('a'), file('b', 'document')]);
+
+    expect(await db.getSharedFolder(work)).toEqual({
+      error: false,
+      data: { folder: { id: work, name: 'Work' }, files: [file('a'), file('b', 'document')] },
+    });
+  });
+
+  it('returns null for an ID that was never a folder', async () => {
+    expect(await db.getSharedFolder('nonexistent1')).toEqual({ error: false, data: null });
+  });
+
+  it('forgets a removed folder', async () => {
+    const user = newUser();
+    const work = await addFolder(user, 'Work');
+    await db.removeFolder(user, work);
+
+    expect(await db.getSharedFolder(work)).toEqual({ error: false, data: null });
+    expect(await shares.owner(work)).toBeNull();
+  });
+
+  it('forgets every folder when the data is cleared', async () => {
+    const user = newUser();
+    const ids = [await addFolder(user, 'Work'), await addFolder(user, 'Memes')];
+    await db.clearUserData(user);
+
+    for (const id of ids) {
+      expect(await db.getSharedFolder(id)).toEqual({ error: false, data: null });
+      expect(await shares.owner(id)).toBeNull();
+    }
+  });
+
+  it("returns null when the owner's vault no longer has the folder, even if the entry was left behind", async () => {
+    const user = newUser();
+    const work = await addFolder(user, 'Work');
+    // A removal whose unregister failed: the entry stays, the folder is gone
+    await runInDurableObject(vault(user), (_instance: UserVault, state) => {
+      state.storage.sql.exec('DELETE FROM folders WHERE id = ?', work);
+    });
+
+    expect(await shares.owner(work)).toBe(String(user));
+    expect(await db.getSharedFolder(work)).toEqual({ error: false, data: null });
+  });
+
+  it('skips a folder ID that another user already owns', async () => {
+    const user = newUser();
+    // The first ID the vault generates comes from these bytes; another user owns it already
+    const fixed = new Uint8Array(9).fill(7);
+    const taken = fixed.toBase64({ alphabet: 'base64url', omitPadding: true });
+    expect(await shares.register(taken, 'someone-else')).toBe(true);
+
+    const spy = vi.spyOn(crypto, 'getRandomValues').mockImplementationOnce((array) => {
+      (array as Uint8Array).set(fixed);
+      return array;
+    });
+    try {
+      const work = await addFolder(user, 'Work');
+      // The vault really got the taken ID first (it runs in this isolate), then picked another one
+      expect(spy).toHaveBeenCalledTimes(2);
+      expect(work).not.toBe(taken);
+      expect(await shares.owner(work)).toBe(String(user));
+      expect(await shares.owner(taken)).toBe('someone-else');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('registers folders from before sharing once, when the vault starts', async () => {
+    const user = newUser();
+    const work = await addFolder(user, 'Work');
+
+    // As a vault from before sharing: no entry, no flag
+    await shares.unregister(work, String(user));
+    await runInDurableObject(vault(user), async (instance: UserVault, state) => {
+      state.storage.kv.delete('shares-registered');
+      await (instance as unknown as { registerExistingFolders(): Promise<void> }).registerExistingFolders();
+      expect(state.storage.kv.get('shares-registered')).toBe(true);
+    });
+    expect(await shares.owner(work)).toBe(String(user));
+
+    // With the flag set, it doesn't run again
+    await shares.unregister(work, String(user));
+    await runInDurableObject(vault(user), async (instance: UserVault) => {
+      await (instance as unknown as { registerExistingFolders(): Promise<void> }).registerExistingFolders();
+    });
+    expect(await shares.owner(work)).toBeNull();
+  });
+});
+
+describe('DurableObjectShareRegistry', () => {
+  const newFolderId = () => `test-${Math.random()}`;
+
+  it('keeps the first owner: the same owner may register again, another one may not', async () => {
+    const id = newFolderId();
+    expect(await shares.register(id, '1')).toBe(true);
+    expect(await shares.register(id, '1')).toBe(true);
+    expect(await shares.register(id, '2')).toBe(false);
+    expect(await shares.owner(id)).toBe('1');
+  });
+
+  it('can only be unregistered by the owner', async () => {
+    const id = newFolderId();
+    await shares.register(id, '1');
+
+    await shares.unregister(id, '2');
+    expect(await shares.owner(id)).toBe('1');
+
+    await shares.unregister(id, '1');
+    expect(await shares.owner(id)).toBeNull();
+  });
+
+  it('knows no owner for an unregistered ID', async () => {
+    expect(await shares.owner(newFolderId())).toBeNull();
   });
 });

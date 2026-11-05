@@ -28,6 +28,11 @@ export class CloudflareKVDatabase implements Database {
     return `files:${userId}:${folderId}`;
   }
 
+  /** Owner of a folder, so a share link (the folder ID) can be resolved: `share:${folderId}` → user ID */
+  private getShareKey(folderId: string): string {
+    return `share:${folderId}`;
+  }
+
   private async readFolders(userId: string | number): Promise<FolderInfo[]> {
     return (await this.kv.get<FolderInfo[]>(this.getFoldersKey(userId), 'json')) ?? [];
   }
@@ -70,6 +75,8 @@ export class CloudflareKVDatabase implements Database {
 
       // Folder IDs are 12-char base64url strings from 9 random bytes (72 bits of entropy)
       const id = generateId(9);
+      // The owner first, so a share link to the folder resolves as soon as the folder exists
+      await this.kv.put(this.getShareKey(id), String(userId));
       await this.kv.put(this.getFoldersKey(userId), JSON.stringify([...folders, { id, name: trimmedName }]));
 
       return { error: false, data: { id } };
@@ -109,6 +116,7 @@ export class CloudflareKVDatabase implements Database {
 
       await this.kv.put(this.getFoldersKey(userId), JSON.stringify(updatedFolders));
       await this.kv.delete(this.getFilesKey(userId, folderId));
+      await this.kv.delete(this.getShareKey(folderId));
 
       return { error: false };
     });
@@ -183,6 +191,17 @@ export class CloudflareKVDatabase implements Database {
     });
   }
 
+  async getSharedFolder(folderId: string): Promise<Status<FolderContents | null>> {
+    return this.run('getSharedFolder', DB_ERROR_KEYS.DB_GET_SHARED_FOLDER, { folderId }, async () => {
+      const ownerId = await this.kv.get(this.getShareKey(folderId));
+      if (ownerId === null) return { error: false, data: null };
+
+      const folder = (await this.readFolders(ownerId)).find((f) => f.id === folderId);
+      if (!folder) return { error: false, data: null };
+      return { error: false, data: { folder, files: await this.readFiles(ownerId, folder.id) } };
+    });
+  }
+
   async getFolderQuota(userId: string | number): Promise<Status<FolderQuota>> {
     return this.run('getFolderQuota', DB_ERROR_KEYS.DB_GET_QUOTA, { userId }, async () => ({
       error: false,
@@ -196,6 +215,7 @@ export class CloudflareKVDatabase implements Database {
       const folders = await this.readFolders(userId);
       await Promise.all([
         ...folders.map((f) => this.kv.delete(this.getFilesKey(userId, f.id))),
+        ...folders.map((f) => this.kv.delete(this.getShareKey(f.id))),
         this.kv.delete(this.getFoldersKey(userId)),
       ]);
 

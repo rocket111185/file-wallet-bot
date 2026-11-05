@@ -10,7 +10,13 @@ import { createTranslator } from 'src/i18n/i18n';
 import type { FileItem, FolderInfo } from 'src/types';
 
 type Answer = {
-  results: { type: string; title?: string; description?: string }[];
+  results: {
+    type: string;
+    title?: string;
+    description?: string;
+    input_message_content?: { message_text: string; parse_mode?: string };
+    reply_markup?: { inline_keyboard: { text: string; url?: string }[][] };
+  }[];
   opts: { next_offset?: string; button?: { text: string; start_parameter?: string } };
 };
 
@@ -30,6 +36,7 @@ const run = async (query: string, folders: FolderInfo[], files: Record<string, F
 
   const ctx = {
     from: { id: 1 },
+    me: { id: 2, is_bot: true, first_name: 'Bot', username: 'test_bot' },
     inlineQuery: { query, offset },
     db,
     t: html,
@@ -54,6 +61,20 @@ describe('inline mode', () => {
     expect(results.map((r) => r.title)).toEqual(['1. Folder 1', '2. Folder 2']);
     expect(results.every((r) => r.description === undefined)).toBe(true);
     expect(opts.button).toEqual(HELP_BUTTON);
+  });
+
+  it('makes a tapped folder send a "Save a copy" share link', async () => {
+    const { results } = await run('', [{ id: 'AbCdEf123_-x', name: 'Work <&>' }]);
+    const [folder] = results;
+
+    expect(folder.input_message_content).toEqual({
+      message_text: '📁 <b>Work &lt;&amp;&gt;</b>\nTap the button below to save a copy of this folder.',
+      parse_mode: 'HTML',
+    });
+    // The link carries only the random folder ID, never the owner's user ID
+    expect(folder.reply_markup?.inline_keyboard).toEqual([
+      [{ text: '📥 Save a copy', url: 'https://t.me/test_bot?start=s_AbCdEf123_-x' }],
+    ]);
   });
 
   it('shows the help button when there are no folders', async () => {

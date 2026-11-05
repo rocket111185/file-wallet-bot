@@ -35,6 +35,7 @@ export const DB_ERROR_KEYS = {
   DB_ADD_FILES: 'error-db-add-files',
   DB_REMOVE_FILES: 'error-db-remove-files',
   DB_LIST_FILES: 'error-db-list-files',
+  DB_GET_SHARED_FOLDER: 'error-db-get-shared-folder',
   DB_CLEAR_DATA: 'error-db-clear-data',
 } as const;
 

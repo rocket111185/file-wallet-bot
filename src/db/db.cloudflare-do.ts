@@ -5,6 +5,8 @@ import { migrate } from 'drizzle-orm/durable-sqlite/migrator';
 
 import migrations from '../../drizzle/user-vault/migrations';
 import type { Database } from 'src/db/db.interface';
+import type { ShareRegistry } from 'src/db/share-registry';
+import { DurableObjectShareRegistry } from 'src/db/share-registry.durable-object';
 import { account, files, folders, type FileRow, type FolderRow } from 'src/db/schemas/user-vault';
 import { checkFileLimit, checkFolderLimit, validateFolderName } from 'src/db/validation';
 import { logger } from 'src/logger';
@@ -41,6 +43,15 @@ type VaultTx = Parameters<Parameters<VaultDb['transaction']>[0]>[0];
  */
 const FILE_WRITE_BATCH = 10;
 
+/**
+ * Folder IDs to try before giving up when another user already owns them (see `ShareRegistry.register`).
+ * With 72-bit random IDs a single collision is already astronomically unlikely.
+ */
+const FOLDER_ID_ATTEMPTS = 3;
+
+/** Set in the vault's own key-value storage once its folders from before sharing are registered */
+const SHARES_REGISTERED_KEY = 'shares-registered';
+
 const toFileItem = (row: Pick<FileRow, 'fileId' | 'name' | 'type'>): FileItem => ({
   id: row.fileId,
   name: row.name,
@@ -63,12 +74,17 @@ const toFileItem = (row: Pick<FileRow, 'fileId' | 'name' | 'type'>): FileItem =>
  */
 export class UserVault extends DurableObject<Env> {
   private readonly db: VaultDb;
+  /** Built here rather than passed in: a Durable Object only gets `env` */
+  private readonly shares: ShareRegistry;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    this.shares = new DurableObjectShareRegistry(env.FOLDER_SHARE);
     this.db = drizzle(ctx.storage);
     // Synchronous and in one transaction, so it's done before the object takes its first call
     migrate(this.db, migrations);
+    // In the background: calls don't wait for it, and a failed run is retried on the next start
+    void this.registerExistingFolders();
   }
 
   // ---- Folders ----
@@ -78,22 +94,26 @@ export class UserVault extends DurableObject<Env> {
     const invalid = validateFolderName(trimmedName);
     if (invalid) return invalid;
 
-    return this.db.transaction((tx): Status<{ id: string }> => {
-      const existing = this.readFolders(tx);
-      if (existing.some((folder) => sameName(folder.name, trimmedName))) {
-        return { error: true, key: DB_ERROR_KEYS.FOLDER_ALREADY_EXISTS, params: { name: trimmedName } };
-      }
+    // Checked before the ID is registered, so a taken name or a full plan costs no call to the share registry
+    const refused = this.db.transaction((tx) => this.checkNewFolder(tx, trimmedName));
+    if (refused) return refused;
 
-      const overLimit = checkFolderLimit(existing.length, this.folderLimit(tx));
-      if (overLimit) return overLimit;
+    // Registered before the folder exists, so a share link to any existing folder resolves
+    const id = await this.reserveFolderId();
 
-      // Folder IDs are 12-char base64url strings from 9 random bytes (72 bits of entropy)
-      const id = generateId(9);
-      const position = (existing.at(-1)?.position ?? -1) + 1; // Rows come sorted by position
+    // Checked again: other calls could run while the ID was being registered
+    const res = this.db.transaction((tx): Status<{ id: string }> => {
+      const refusedNow = this.checkNewFolder(tx, trimmedName);
+      if (refusedNow) return refusedNow;
+
+      const position = (this.readFolders(tx).at(-1)?.position ?? -1) + 1; // Rows come sorted by position
       tx.insert(folders).values({ id, name: trimmedName, position }).run();
 
       return { error: false, data: { id } };
     });
+
+    if (res.error) await this.unregisterShares([id]);
+    return res;
   }
 
   async renameFolder(folderId: string, newName: string): Promise<Status> {
@@ -116,7 +136,7 @@ export class UserVault extends DurableObject<Env> {
   }
 
   async removeFolder(folderId: string): Promise<Status> {
-    return this.db.transaction((tx): Status => {
+    const res = this.db.transaction((tx): Status => {
       if (!this.folderExists(tx, folderId)) {
         return { error: true, key: DB_ERROR_KEYS.FOLDER_NOT_FOUND };
       }
@@ -125,6 +145,9 @@ export class UserVault extends DurableObject<Env> {
       tx.delete(folders).where(eq(folders.id, folderId)).run();
       return { error: false };
     });
+
+    if (!res.error) await this.unregisterShares([folderId]);
+    return res;
   }
 
   async listFolders(): Promise<Status<FolderInfo[]>> {
@@ -181,6 +204,17 @@ export class UserVault extends DurableObject<Env> {
     return { error: false, data: { folder, files: await this.readFiles(folder.id) } };
   }
 
+  /** A folder by its ID, with its files: what a share link opens. `null` when there is no such folder. */
+  async getFolder(folderId: string): Promise<Status<FolderContents | null>> {
+    const [folder] = await this.db
+      .select({ id: folders.id, name: folders.name })
+      .from(folders)
+      .where(eq(folders.id, folderId));
+    if (!folder) return { error: false, data: null };
+
+    return { error: false, data: { folder, files: await this.readFiles(folder.id) } };
+  }
+
   // ---- Plan ----
 
   async getFolderQuota(): Promise<Status<FolderQuota>> {
@@ -201,17 +235,88 @@ export class UserVault extends DurableObject<Env> {
 
   /** Removes folders and files; the plan stays, since upgrades are paid for */
   async clearUserData(): Promise<Status> {
-    this.db.transaction((tx) => {
+    const removed = this.db.transaction((tx) => {
+      const ids = tx.select({ id: folders.id }).from(folders).all();
       tx.delete(files).run();
       tx.delete(folders).run();
+      return ids.map((row) => row.id);
     });
+
+    await this.unregisterShares(removed);
     return { error: false };
+  }
+
+  // ---- Sharing ----
+
+  /** The user this vault belongs to: vaults are always reached by name (`getByName(userId)`) */
+  private get ownerId(): string {
+    const name = this.ctx.id.name;
+    if (!name) throw new Error('UserVault must be reached by name, the user ID');
+    return name;
+  }
+
+  /**
+   * A new random folder ID, registered to this user in the share registry
+   *
+   * Folder IDs are 12-char base64url strings from 9 random bytes (72 bits of entropy). They are global
+   * now (a share link is the folder ID), so one owned by another user is skipped.
+   */
+  private async reserveFolderId(): Promise<string> {
+    for (let attempt = 0; attempt < FOLDER_ID_ATTEMPTS; attempt++) {
+      const id = generateId(9);
+      if (await this.shares.register(id, this.ownerId)) return id;
+      logger.warn('vault.folderId.collision', { userId: this.ownerId, folderId: id });
+    }
+    throw new Error(`No free folder ID after ${FOLDER_ID_ATTEMPTS} attempts`);
+  }
+
+  /**
+   * Drops the share registry entries of removed folders. Best effort: an entry left behind is harmless,
+   * as its link finds no folder in this vault anymore.
+   */
+  private async unregisterShares(folderIds: string[]): Promise<void> {
+    await Promise.all(
+      folderIds.map((folderId) =>
+        this.shares
+          .unregister(folderId, this.ownerId)
+          .catch((err: unknown) => logger.warn('vault.share.unregister.failed', { folderId, err })),
+      ),
+    );
+  }
+
+  /**
+   * Registers folders created before sharing existed, once per vault. New folders are registered by
+   * `addFolder`. A failed run leaves the flag unset, so the next start of the vault tries again.
+   */
+  private async registerExistingFolders(): Promise<void> {
+    if (this.ctx.storage.kv.get(SHARES_REGISTERED_KEY)) return;
+
+    try {
+      const rows = await this.db.select({ id: folders.id }).from(folders);
+      const registered = await Promise.all(rows.map((row) => this.shares.register(row.id, this.ownerId)));
+      registered.forEach((ok, i) => {
+        // Can't be fixed here, the ID is already in use: the folder just can't be shared
+        if (!ok) logger.error('vault.share.collision', { userId: this.ownerId, folderId: rows[i].id });
+      });
+      this.ctx.storage.kv.put(SHARES_REGISTERED_KEY, true);
+    } catch (err) {
+      logger.error('vault.share.backfill.failed', { err });
+    }
   }
 
   // ---- Helpers ----
 
   private readFolders(tx: VaultTx): FolderRow[] {
     return tx.select().from(folders).orderBy(asc(folders.position)).all();
+  }
+
+  /** Why a folder named `name` can't be added (name taken, plan's folder limit), or null if it can */
+  private checkNewFolder(tx: VaultTx, name: string): StatusError | null {
+    const existing = this.readFolders(tx);
+    if (existing.some((folder) => sameName(folder.name, name))) {
+      return { error: true, key: DB_ERROR_KEYS.FOLDER_ALREADY_EXISTS, params: { name } };
+    }
+    return checkFolderLimit(existing.length, this.folderLimit(tx));
   }
 
   private readPlan(tx: VaultTx): Plan {
@@ -275,10 +380,14 @@ export class UserVault extends DurableObject<Env> {
 
 /**
  * Database backed by one UserVault Durable Object per user. Each call is a single RPC; storage work
- * happens inside the object, next to its SQLite database.
+ * happens inside the object, next to its SQLite database. `shares` finds the owner of a shared folder
+ * (`getSharedFolder`); the vaults keep it up to date themselves.
  */
 export class CloudflareDODatabase implements Database {
-  constructor(private readonly namespace: DurableObjectNamespace<UserVault>) {}
+  constructor(
+    private readonly namespace: DurableObjectNamespace<UserVault>,
+    private readonly shares: ShareRegistry,
+  ) {}
 
   private vault(userId: UserId) {
     return this.namespace.getByName(String(userId));
@@ -344,6 +453,14 @@ export class CloudflareDODatabase implements Database {
     return this.call('getFolderContents', DB_ERROR_KEYS.DB_LIST_FILES, { userId, folderNumber }, () =>
       this.vault(userId).getFolderContents(folderNumber),
     );
+  }
+
+  getSharedFolder(folderId: string): Promise<Status<FolderContents | null>> {
+    return this.call('getSharedFolder', DB_ERROR_KEYS.DB_GET_SHARED_FOLDER, { folderId }, async () => {
+      const ownerId = await this.shares.owner(folderId);
+      if (ownerId === null) return { error: false, data: null };
+      return this.vault(ownerId).getFolder(folderId);
+    });
   }
 
   getFolderQuota(userId: UserId): Promise<Status<FolderQuota>> {

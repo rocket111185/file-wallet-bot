@@ -38,6 +38,12 @@ export type Flow =
       selected: string[]; // IDs of the files marked for removal
       page: number; // 0-based page of the file list
     }
+  | {
+      kind: 'import-folder';
+      folderId: string; // The shared folder (another user's, or the user's own); its files are read when saving
+      menuMessageId: number; // The preview with Save / Cancel: buttons on any other message are stale
+      naming: boolean; // The user already has a folder with that name, so a new name is awaited as text
+    }
   | { kind: 'clear-data' };
 
 export type FlowKind = Flow['kind'];

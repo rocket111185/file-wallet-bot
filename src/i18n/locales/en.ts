@@ -27,6 +27,7 @@ export const en = {
   'error-db-add-files': '❌ Failed to save the files. Please try again later.',
   'error-db-remove-files': '❌ Failed to remove the files. Please try again later.',
   'error-db-list-files': '❌ Failed to load the files. Please try again later.',
+  'error-db-get-shared-folder': '❌ Failed to open the shared folder. Please try again later.',
   'error-db-clear-data': '❌ Failed to clear your data. Please try again later.',
 
   // --- Common ---
@@ -52,7 +53,7 @@ export const en = {
     '<b>Available commands:</b>\n' +
     `${p.commands}\n\n` +
     `In any chat, type <code>@${p.botUsername}</code> to see your folders, then add a folder's number ` +
-    `(e.g. <code>@${p.botUsername} 1</code>) to open it. Tap a file to send it instantly!`,
+    `(e.g. <code>@${p.botUsername} 1</code>) to open it. Tap a file to send it instantly, or tap a folder to share a copy of it!`,
 
   // --- /start help (the inline help button; may be the user's first message, so it is self-contained) ---
   'inline-guide': (p: { botUsername: string }) =>
@@ -63,7 +64,9 @@ export const en = {
     'message field. Your folders appear above it, numbered.\n\n' +
     `<b>3. Open a folder.</b> Add the folder's number: <code>@${p.botUsername} 2</code> shows the files of ` +
     'folder 2. Tap a file to send it.\n\n' +
-    '<b>4. Go back.</b> Erase the number to see all folders again. Tapping a folder itself only sends its name.\n\n' +
+    '<b>4. Go back.</b> Erase the number to see all folders again.\n\n' +
+    '<b>5. Share a folder.</b> Tapping a folder itself sends it to the chat with a <b>Save a copy</b> button: ' +
+    'anyone who taps it gets their own copy of the folder.\n\n' +
     '💡 New and changed folders may take up to half a minute to show up in inline search.\n\n' +
     'Send /start to see all commands.',
 
@@ -109,6 +112,18 @@ export const en = {
     `Send me the name for the copy of <b>${p.name}</b> (1–${p.max} characters):`,
   'copy-folder-success': (p: { name: string; newName: string; count: number }) =>
     `✅ Copied ${plural('en', p.count, { one: '1 file', other: `${p.count} files` })} from <b>${p.name}</b> to the new folder <b>${p.newName}</b>.`,
+
+  // --- Shared folders: the "Save a copy" link (/start s_<folderId>); may be the user's first message ---
+  'import-folder-preview': (p: { name: string; count: number }) =>
+    `📁 <b>${p.name}</b>\n\nThis folder was shared with you: ${plural('en', p.count, { one: '1 file', other: `${p.count} files` })}. ` +
+    'Save a copy to your folders?',
+  'import-folder-button-save': '📥 Save a copy',
+  'import-folder-not-found': '⚠️ This link no longer works: the folder was removed.',
+  'import-folder-name-taken': (p: { name: string; max: number }) =>
+    `You already have a folder named <b>${p.name}</b>. Send me a name for the copy (1–${p.max} characters):`,
+  'import-folder-success': (p: { name: string; count: number; botUsername: string }) =>
+    `✅ Saved <b>${p.name}</b> with ${plural('en', p.count, { one: '1 file', other: `${p.count} files` })} to your folders. ` +
+    `Type <code>@${p.botUsername}</code> in any chat to use it.`,
 
   // --- /remove_folder ---
   'remove-folder-no-folders': "⚠️ You don't have any folders to remove.",
@@ -166,4 +181,9 @@ export const en = {
   'inline-unknown-folder-description': 'Erase the number to see all folders',
   'inline-empty-folder-title': (p: { name: string }) => `"${p.name}" is empty`,
   'inline-empty-folder-description': 'Erase the number to go back to folders',
+  /** HTML: what a tapped folder sends to the chat, above `inline-share-button` */
+  'inline-shared-folder-message': (p: { name: string }) =>
+    `📁 <b>${p.name}</b>\nTap the button below to save a copy of this folder.`,
+  /** Opens the bot with the folder's share link */
+  'inline-share-button': '📥 Save a copy',
 };
