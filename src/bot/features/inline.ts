@@ -1,8 +1,11 @@
 import { createHash } from 'node:crypto';
 import { Composer, InlineQueryResultBuilder } from 'grammy';
 import type { InlineQueryResult } from 'grammy/types';
+
 import type { BaseContext } from 'src/bot/context';
 import { fileDisplayName, uniqueFiles } from 'src/bot/utils';
+import { HELP_START_PARAMETER } from 'src/bot/features/start';
+
 import type { Translate } from 'src/i18n/i18n';
 import type { FileItem } from 'src/types';
 import { escapeHtml } from 'src/utils';
@@ -72,9 +75,17 @@ export const handleInlineQuery = async (ctx: BaseContext, cacheSeconds = DEFAULT
 
   // ---- Folder list ----
   if (folderNumber === null) {
+    // The help button sits above the folder list and opens the bot chat, instead of sending anything to
+    // the current one (unlike any result, see parseFolderNumber). Someone who typed a folder number
+    // already knows how this works, so folder contents don't get it.
+    const listOpts = {
+      ...opts,
+      button: { text: t('inline-help-button'), start_parameter: HELP_START_PARAMETER },
+    };
+
     const foldersRes = await ctx.db.listFolders(userId);
     if (foldersRes.error) {
-      await ctx.answerInlineQuery([errorResult()], opts);
+      await ctx.answerInlineQuery([errorResult()], listOpts);
       return;
     }
     const folders = foldersRes.data; // Folder number = position in this list + 1
@@ -82,7 +93,7 @@ export const handleInlineQuery = async (ctx: BaseContext, cacheSeconds = DEFAULT
     if (folders.length === 0) {
       await ctx.answerInlineQuery(
         [info('none', t('inline-no-folders-title'), t('inline-no-folders-description'))],
-        opts,
+        listOpts,
       );
       return;
     }
@@ -90,11 +101,14 @@ export const handleInlineQuery = async (ctx: BaseContext, cacheSeconds = DEFAULT
     const { page, next_offset } = paginate(folders, offset);
     const results = page.map((folder, i) => {
       const n = offset + i + 1;
-      return InlineQueryResultBuilder.article(resultId('folder', folder.id), `${n}. ${folder.name}`, {
-        description: t('inline-folder-description', { n }),
-      }).text(`<b>${escapeHtml(folder.name)}</b>`, { parse_mode: 'HTML' });
+      // How the numbers work is explained by the help button
+      return InlineQueryResultBuilder.article(resultId('folder', folder.id), `${n}. ${folder.name}`).text(
+        `<b>${escapeHtml(folder.name)}</b>`,
+        { parse_mode: 'HTML' },
+      );
     });
-    await ctx.answerInlineQuery(results, { ...opts, next_offset });
+
+    await ctx.answerInlineQuery(results, { ...listOpts, next_offset });
     return;
   }
 

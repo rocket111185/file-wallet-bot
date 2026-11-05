@@ -1,5 +1,4 @@
 import { CommandGroup } from '@grammyjs/commands';
-import { Composer } from 'grammy';
 import type { LanguageCode } from 'grammy/types';
 
 import type { BotContext } from 'src/bot/context';
@@ -22,7 +21,7 @@ const handleCancel = async (ctx: BotContext): Promise<void> => {
  * The commands users see, in menu order. This list is the only place they are defined: it
  * registers their handlers, fills Telegram's command menu (`setMyCommands`) and the /start list.
  *
- * /start is deliberately left out (see `commands` below).
+ * /start is deliberately left out: Telegram shows its own Start button (see src/bot/features/start.ts).
  */
 const MENU: { name: string; description: PlainMessageKey; handler: (ctx: BotContext) => Promise<void> }[] = [
   { name: 'add_folder', description: 'command-add-folder', handler: startAddFolder },
@@ -51,13 +50,6 @@ for (const { name, description, handler } of MENU) {
   }
 }
 
-const handleStart = async (ctx: BotContext): Promise<void> => {
-  await endFlow(ctx);
-  const commands = MENU.map(({ name, description }) => `/${name} - ${ctx.tText(description)}`).join('\n');
-  await ctx.reply(ctx.t('start-welcome', { botUsername: ctx.me.username, commands }));
-};
-
-/** The menu commands plus /start, which stays out of the menu as Telegram shows its own Start button */
-export const commands = new Composer<BotContext>(menuCommands);
-
-commands.command('start', handleStart);
+/** The menu commands as "/name - description" lines, for the /start welcome */
+export const menuCommandList = (ctx: BotContext): string =>
+  MENU.map(({ name, description }) => `/${name} - ${ctx.tText(description)}`).join('\n');

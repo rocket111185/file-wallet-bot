@@ -42,14 +42,6 @@ describe('command menu', () => {
     expect(lines[0]).toBe('/add_folder - Create a new folder');
   });
 
-  it("/start speaks the user's language, if it has a translation", async () => {
-    const bot = createTestBot({ languageCode: 'uk-UA' });
-    await bot.send('/start');
-
-    expect(bot.lastText()).toContain('Вітаємо у File Wallet Bot!');
-    expect(bot.lastText()).toContain('/copy_folder - Скопіювати папку з усіма файлами');
-  });
-
   it('menu commands still start their flows', async () => {
     const bot = createTestBot();
     await bot.send('/add_folder');

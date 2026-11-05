@@ -9,7 +9,12 @@ import type { Database } from 'src/db/db.interface';
 import { createTranslator } from 'src/i18n/i18n';
 import type { FileItem, FolderInfo } from 'src/types';
 
-type Answer = { results: { type: string; title?: string }[]; opts: { next_offset?: string } };
+type Answer = {
+  results: { type: string; title?: string; description?: string }[];
+  opts: { next_offset?: string; button?: { text: string; start_parameter?: string } };
+};
+
+const HELP_BUTTON = { text: '❓ How to use inline search', start_parameter: 'help' };
 
 const run = async (query: string, folders: FolderInfo[], files: Record<string, FileItem[]> = {}, offset = '') => {
   const answers: Answer[] = [];
@@ -44,9 +49,28 @@ const folders = (count: number): FolderInfo[] =>
   Array.from({ length: count }, (_, i) => ({ id: `f${i + 1}`, name: `Folder ${i + 1}` }));
 
 describe('inline mode', () => {
-  it('lists numbered folders for an empty query', async () => {
-    const { results } = await run('', folders(2));
+  it('lists numbered folders for an empty query, with the help button above and no descriptions', async () => {
+    const { results, opts } = await run('', folders(2));
     expect(results.map((r) => r.title)).toEqual(['1. Folder 1', '2. Folder 2']);
+    expect(results.every((r) => r.description === undefined)).toBe(true);
+    expect(opts.button).toEqual(HELP_BUTTON);
+  });
+
+  it('shows the help button when there are no folders', async () => {
+    const { results, opts } = await run('', []);
+    expect(results[0].title).toBe('No folders found');
+    expect(opts.button).toEqual(HELP_BUTTON);
+  });
+
+  it('shows the help button on every page of the folder list', async () => {
+    expect((await run('', folders(60), {}, '50')).opts.button).toEqual(HELP_BUTTON);
+  });
+
+  it('leaves the help button out once a folder number is typed', async () => {
+    const files = { f1: [{ id: 'doc', name: 'cv.pdf', type: 'document' as const }] };
+    expect((await run('1', folders(2), files)).opts.button).toBeUndefined();
+    expect((await run('2', folders(2), files)).opts.button).toBeUndefined(); // Empty folder
+    expect((await run('5', folders(2), files)).opts.button).toBeUndefined(); // Unknown folder
   });
 
   it('shows the folder list for non-numeric queries instead of filtering', async () => {
@@ -119,6 +143,7 @@ describe('inline answers in the webhook response', () => {
       inline_query_id: 'q1',
       cache_time: 30,
       is_personal: true,
+      button: HELP_BUTTON,
     });
     expect(body.results).toHaveLength(2);
     expect(fetchSpy).not.toHaveBeenCalled();

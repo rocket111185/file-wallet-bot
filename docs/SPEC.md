@@ -183,8 +183,9 @@ export const initialSession = (): UserSession => ({ flow: null });
 The chat bot's handlers are grouped by feature in `src/bot/features/`. Each feature is a grammY `Composer` holding its own buttons and message handlers, and exports the function its command starts with (e.g. `startAddFolder`). `createChatBot` only plugs them in:
 
 ```
-src/bot/commands.ts  the command menu (registers each command's handler), /start, /cancel
+src/bot/commands.ts  the command menu (registers each command's handler), /cancel
 src/bot/features/
+  start.ts           /start and its deep-link payloads (/start help)
   folders/           add.ts (/add_folder), rename.ts (/rename_folder), remove.ts (/remove_folder),
                      copy.ts (/copy_folder)
   files/             add.ts (/add_files), remove.ts (/remove_files)
@@ -239,6 +240,8 @@ Shared helpers:
   * How to organize files into folders (`/add_folder`, `/add_files`, `/remove_files`).
   * How to share files in any chat using inline queries: `@botname` lists folders, `@botname {number}` opens one.
   * List of available commands: the menu commands with their descriptions, generated from `src/bot/commands.ts` (section 2.5), so it always matches the command menu. `/start` itself is not listed.
+* **`/start help`** (deep link from the inline help button, section 4.2) replies with the inline search guide (`inline-guide`) instead, and **keeps** the current flow, so tapping the button mid-flow (e.g. while adding files) loses nothing. It can be the user's very first message (Telegram shows its Start button, which sends `/start help`), so the guide is self-contained: it also explains how to create a folder and add files, and points to `/start` for all commands. It needs no stored data.
+* Any other payload (`/start whatever`) is treated as plain `/start`.
 
 ---
 
@@ -458,8 +461,9 @@ Selecting **any** inline result sends it to the chat: every result type is eithe
 +-------------------------------------------------------------+
 | User types: @file_wallet_bot                                |
 +-------------------------------------------------------------+
-| [1. Work Documents]   Type 1 after the bot name to open...  |
-| [2. Personal Photos]  Type 2 after the bot name to open...  |
+| [ ❓ How to use inline search ]  -> opens bot: /start help   |
+| [1. Work Documents]                                         |
+| [2. Personal Photos]                                        |
 +-------------------------------------------------------------+
 
 +-------------------------------------------------------------+
@@ -479,12 +483,12 @@ Folder numbers are the folder's 1-based position in the user's folder list (`fol
 
 ### 4.2 Folder List (`@file_wallet_bot`)
 
+* **Help button**: every folder list answer (including *No folders found* and a failed folder lookup) carries `button: { text: "❓ How to use inline search", start_parameter: "help" }` (`InlineQueryResultsButton`). Telegram shows it above the results; tapping it opens the bot's private chat with `/start help` (section 3.2) and sends nothing to the current chat, which no result could do (see 4.0). Folder contents (section 4.3) don't get it: whoever typed a folder number already knows how inline search works.
 * If the user has 0 folders: returns a single `InlineQueryResultArticle`:
   * Title: *"No folders found"*
   * Description: *"Open the bot chat and use /add_folder to create one"*
 * Otherwise: each folder is an `InlineQueryResultArticle`:
-  * Title: `{n}. {folderName}`
-  * Description: *"Type {n} after the bot name to open this folder"*
+  * Title: `{n}. {folderName}`, no description (the help button explains the numbers)
   * Selecting it (by mistake) sends `📁 {folderName}`; this cannot be prevented (see 4.0).
 * Pagination: up to 50 results per answer, the rest via `next_offset`. Numbering continues across pages.
 

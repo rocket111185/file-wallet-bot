@@ -54,6 +54,19 @@ export const en = {
     `In any chat, type <code>@${p.botUsername}</code> to see your folders, then add a folder's number ` +
     `(e.g. <code>@${p.botUsername} 1</code>) to open it. Tap a file to send it instantly!`,
 
+  // --- /start help (the inline help button; may be the user's first message, so it is self-contained) ---
+  'inline-guide': (p: { botUsername: string }) =>
+    '🔎 <b>How to use inline search</b>\n\n' +
+    'Inline search sends your saved files to any chat: private chats, groups and channels.\n\n' +
+    '<b>1. Save your files.</b> Create a folder with /add_folder, then put files into it with /add_files.\n\n' +
+    `<b>2. Open your folders.</b> In any chat, type <code>@${p.botUsername}</code> in the ` +
+    'message field. Your folders appear above it, numbered.\n\n' +
+    `<b>3. Open a folder.</b> Add the folder's number: <code>@${p.botUsername} 2</code> shows the files of ` +
+    'folder 2. Tap a file to send it.\n\n' +
+    '<b>4. Go back.</b> Erase the number to see all folders again. Tapping a folder itself only sends its name.\n\n' +
+    '💡 New and changed folders may take up to half a minute to show up in inline search.\n\n' +
+    'Send /start to see all commands.',
+
   // --- /add_folder ---
   'add-folder-prompt': (p: { max: number }) => `Please enter the name for your new folder (1–${p.max} characters):`,
   'folder-name-text-required': '⚠️ Please send a text message with the folder name.',
@@ -147,7 +160,8 @@ export const en = {
   'inline-error-description': 'Please try again later',
   'inline-no-folders-title': 'No folders found',
   'inline-no-folders-description': 'Open the bot chat and use /add_folder to create one',
-  'inline-folder-description': (p: { n: number }) => `Type ${p.n} after the bot name to open this folder`,
+  /** The button above inline results; opens the bot chat with `inline-guide` */
+  'inline-help-button': '❓ How to use inline search',
   'inline-unknown-folder-title': (p: { n: number }) => `No folder #${p.n}`,
   'inline-unknown-folder-description': 'Erase the number to see all folders',
   'inline-empty-folder-title': (p: { name: string }) => `"${p.name}" is empty`,
