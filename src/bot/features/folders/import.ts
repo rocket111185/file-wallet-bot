@@ -4,7 +4,7 @@ import type { BotContext } from 'src/bot/context';
 import { activeFlow, awaitingInput, cancelFlow, endFlow, type FlowContext } from 'src/bot/flow';
 import { addFolderWithFiles, hasFolderRoom, translateError } from 'src/bot/utils';
 import type { FlowOf } from 'src/session/session';
-import { DB_ERROR_KEYS, MAX_FOLDER_NAME_LENGTH } from 'src/types';
+import { DB_ERROR_KEYS, MAX_FILES_PER_FOLDER, MAX_FOLDER_NAME_LENGTH } from 'src/types';
 
 type ImportFlow = FlowOf<'import-folder'>;
 
@@ -49,7 +49,7 @@ export const startImportFolder = async (ctx: BotContext, folderId: string): Prom
  * Copies the shared folder into the user's vault: under its own name from the Save button, or under
  * `newName` sent after a name clash. The folder is read again, so the copy has what it holds now.
  *
- * Outcomes that end this step (saved, link dead, name taken, limit) replace the preview when Save was
+ * Outcomes that end this step (saved, link dead, name taken or too long, limit) replace the preview when Save was
  * pressed (`fromButton`). Errors the user can retry from are sent as new messages, keeping the preview.
  */
 const saveCopy = async (ctx: BotContext, flow: ImportFlow, newName?: string): Promise<void> => {
@@ -76,20 +76,36 @@ const saveCopy = async (ctx: BotContext, flow: ImportFlow, newName?: string): Pr
 
   const copyRes = await addFolderWithFiles(ctx.db, userId, name, files);
   if (copyRes.error) {
-    if (copyRes.key === DB_ERROR_KEYS.FOLDER_ALREADY_EXISTS && fromButton) {
-      // Same as /copy_folder: the copy's name arrives as a text message, see handleName
+    // The folder's own name can't be used: taken in this vault, or too long (a folder named before
+    // the length limit existed). Same as /copy_folder: the copy's name arrives as a text message,
+    // see handleName.
+    if (fromButton && copyRes.key === DB_ERROR_KEYS.FOLDER_ALREADY_EXISTS) {
       flow.naming = true;
       await finish(ctx.t('import-folder-name-taken', { name, max: MAX_FOLDER_NAME_LENGTH }));
       return;
     }
 
-    // Another name won't help once the limit is reached. Anything else (a taken or invalid new name,
-    // a failed write) keeps the flow, so the user can try again.
+    if (fromButton && copyRes.key === DB_ERROR_KEYS.FOLDER_NAME_LENGTH) {
+      flow.naming = true;
+      await finish(ctx.t('import-folder-name-too-long', { max: MAX_FOLDER_NAME_LENGTH }));
+      return;
+    }
+
+    // Retrying can't help with a limit: the user is at their folder limit, or the shared folder
+    // holds more files than a folder may (it was filled before the file limit existed).
     if (copyRes.key === DB_ERROR_KEYS.FOLDER_LIMIT_REACHED) {
       await endFlow(ctx);
       await finish(translateError(ctx.t, copyRes));
       return;
     }
+
+    if (copyRes.key === DB_ERROR_KEYS.FILE_LIMIT_REACHED) {
+      await endFlow(ctx);
+      await finish(ctx.t('import-folder-too-many-files', { count: files.length, max: MAX_FILES_PER_FOLDER }));
+      return;
+    }
+
+    // Anything else (a taken or invalid new name, a failed write) keeps the flow, so the user can try again
     await ctx.reply(translateError(ctx.t, copyRes));
     return;
   }

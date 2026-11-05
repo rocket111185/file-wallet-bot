@@ -121,6 +121,10 @@ export const en = {
   'import-folder-not-found': '⚠️ This link no longer works: the folder was removed.',
   'import-folder-name-taken': (p: { name: string; max: number }) =>
     `You already have a folder named <b>${p.name}</b>. Send me a name for the copy (1–${p.max} characters):`,
+  'import-folder-name-too-long': (p: { max: number }) =>
+    `This folder's name is too long to save. Send me a name for the copy (1–${p.max} characters):`,
+  'import-folder-too-many-files': (p: { count: number; max: number }) =>
+    `⚠️ This folder can't be saved: it has ${p.count} files, and a folder can hold up to ${p.max}.`,
   'import-folder-success': (p: { name: string; count: number; botUsername: string }) =>
     `✅ Saved <b>${p.name}</b> with ${plural('en', p.count, { one: '1 file', other: `${p.count} files` })} to your folders. ` +
     `Type <code>@${p.botUsername}</code> in any chat to use it.`,

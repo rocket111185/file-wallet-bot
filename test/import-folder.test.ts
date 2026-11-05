@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { FileItem } from 'src/types';
+import { type FileItem, type FolderContents, MAX_FILES_PER_FOLDER, MAX_FOLDER_NAME_LENGTH } from 'src/types';
 import { createTestBot } from './helpers';
 
 const files: FileItem[] = [
@@ -92,6 +92,53 @@ describe('shared folders (/start s_<folderId>)', () => {
     expect(friend.lastText()).toContain('✅ Saved <b>Shared work</b> with 2 files');
     expect(friend.flow()).toBeNull();
     expect((await friend.folders()).map((f) => f.name)).toEqual(['work', 'Shared work']);
+  });
+
+  /**
+   * Folders made before the name length and file limits keep their names and files, but the database
+   * no longer lets them be created: this makes `bot` see the shared folder with `change` applied
+   */
+  const seeSharedFolderAs = (bot: ReturnType<typeof createTestBot>, change: (c: FolderContents) => FolderContents) => {
+    const getSharedFolder = bot.db.getSharedFolder.bind(bot.db);
+    bot.db.getSharedFolder = async (folderId) => {
+      const res = await getSharedFolder(folderId);
+      return res.error || !res.data ? res : { ...res, data: change(res.data) };
+    };
+  };
+
+  it('asks for a name when the folder was named before the length limit', async () => {
+    const { friend, workId } = await setup();
+    const longName = 'W'.repeat(MAX_FOLDER_NAME_LENGTH + 1);
+    seeSharedFolderAs(friend, (c) => ({ ...c, folder: { ...c.folder, name: longName } }));
+
+    await friend.send(`/start s_${workId}`);
+    await friend.press('imf:save', friend.lastMessageId());
+    expect(friend.lastText()).toBe(
+      "This folder's name is too long to save. Send me a name for the copy (1–32 characters):",
+    );
+    expect(friend.calls.at(-1)?.method).toBe('editMessageText');
+    expect(friend.flow()).toMatchObject({ kind: 'import-folder', naming: true });
+
+    await friend.send('Work');
+    expect(friend.lastText()).toContain('✅ Saved <b>Work</b> with 2 files');
+    expect(friend.flow()).toBeNull();
+  });
+
+  it('ends the flow when the folder holds more files than a folder may', async () => {
+    const { friend, workId } = await setup();
+    const many: FileItem[] = Array.from({ length: MAX_FILES_PER_FOLDER + 1 }, (_, i) => ({
+      id: `f${i}`,
+      name: `f${i}.pdf`,
+      type: 'document',
+    }));
+    seeSharedFolderAs(friend, (c) => ({ ...c, files: many }));
+
+    await friend.send(`/start s_${workId}`);
+    await friend.press('imf:save', friend.lastMessageId());
+    expect(friend.lastText()).toBe("⚠️ This folder can't be saved: it has 51 files, and a folder can hold up to 50.");
+    expect(friend.calls.at(-1)?.method).toBe('editMessageText'); // Replaces the preview, Save is gone
+    expect(friend.flow()).toBeNull();
+    expect(await friend.folders()).toEqual([]);
   });
 
   it('lets the owner save a copy of their own folder, under a new name', async () => {

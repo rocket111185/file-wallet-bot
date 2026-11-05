@@ -126,6 +126,10 @@ export const uk: Messages = {
   'import-folder-not-found': '⚠️ Це посилання більше не працює: папку видалено.',
   'import-folder-name-taken': (p: { name: string; max: number }) =>
     `У вас уже є папка з назвою <b>${p.name}</b>. Надішліть назву для копії (1–${p.max} символів):`,
+  'import-folder-name-too-long': (p: { max: number }) =>
+    `Назва цієї папки задовга, щоб її зберегти. Надішліть назву для копії (1–${p.max} символів):`,
+  'import-folder-too-many-files': (p: { count: number; max: number }) =>
+    `⚠️ Цю папку не можна зберегти: у ній ${files(p.count)}, а папка може містити не більше ніж ${files(p.max)}.`,
   'import-folder-success': (p: { name: string; count: number; botUsername: string }) =>
     `✅ Папку <b>${p.name}</b> (${files(p.count)}) збережено до ваших папок. ` +
     `Введіть <code>@${p.botUsername}</code> у будь-якому чаті, щоб скористатися нею.`,
